@@ -285,6 +285,74 @@ async def test_trigger_acknowledged_then_done(cam_dir: tuple[Path, Path], tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_frontback_renders_offline_placeholder_when_cam1_missing(
+    cam_dir: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """When cam1 fails to capture during frontback mode, the orchestrator
+    still writes both display sinks (operator sees CAM 1 OFFLINE) but
+    skips the D0 / edge-count writes since the algorithm did not run."""
+    _, d2 = cam_dir  # use only cam2's dir; cam1 is intentionally absent
+
+    plc = ScriptedPLC()
+    plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_FIRE
+    plc.regs[2] = 1  # MODE_FRONTBACK
+
+    legacy_plc = LegacyFronbackPLC(plc_base=plc)
+    # MockCameraManager returns None from capture_image(1) when cam1 is
+    # not configured — same code path as a real camera being offline at
+    # capture time (the cam crashed mid-run rather than at startup).
+    cam = MockCameraManager({2: d2})
+    roi = make_file_roi_provider(cam, base_dir=tmp_path, logger=_logger())
+
+    png_path = tmp_path / "processed_image.png"
+    rgb565_path = tmp_path / "output_image.rgb565"
+    orchestrator = LegacyFronbackOrchestrator(
+        legacy_plc, cam, roi, _logger(), png_path=png_path, rgb565_path=rgb565_path
+    )
+    task = asyncio.create_task(orchestrator.run())
+
+    # Wait for: display sinks written + TRIGGER_DONE handshake. The
+    # display write happens inside _do_frontback; TRIGGER_DONE is written
+    # after _do_frontback returns. Bail on display-files-only would race
+    # the trigger-done assertion below.
+    deadline = asyncio.get_event_loop().time() + 3.0
+    while asyncio.get_event_loop().time() < deadline:
+        files_done = png_path.is_file() and rgb565_path.is_file()
+        trigger_writes = [v[0] for addr, v in plc.writes if addr == REG_CAPTURE_TRIGGER]
+        if files_done and TRIGGER_DONE in trigger_writes:
+            break
+        await asyncio.sleep(0.05)
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    # Display sinks are written even though cam1 was offline — operator
+    # screen shows the OFFLINE placeholder instead of a frozen old frame.
+    assert png_path.is_file(), "PNG should be written with placeholder when cam1 offline"
+    assert rgb565_path.is_file(), "rgb565 should be written with placeholder when cam1 offline"
+
+    addrs_written = [addr for addr, _ in plc.writes]
+    # Camera-status writes are still made so the PLC knows which camera
+    # dropped (matches every other frontback cycle).
+    assert REG_CAM1_STATUS in addrs_written
+    assert REG_CAM2_STATUS in addrs_written
+    # But D0 (recognition result) and D20-D23 (edge counts) MUST NOT be
+    # written — the algorithm did not run on a half-blind frame, so any
+    # value here would be a lie to the PLC.
+    assert REG_RECOGNITION_RESULT not in addrs_written, (
+        "D0 should NOT be written when cam1 is offline (algorithm didn't run)"
+    )
+    assert REG_EDGE1_LOW not in addrs_written, (
+        "edge counts should NOT be written when cam1 is offline"
+    )
+    # Trigger handshake still completes so the PLC doesn't time out.
+    d1_writes = [v[0] for addr, v in plc.writes if addr == REG_CAPTURE_TRIGGER]
+    assert TRIGGER_IDLE in d1_writes
+    assert TRIGGER_DONE in d1_writes
+
+
+@pytest.mark.asyncio
 async def test_no_capture_when_trigger_idle(cam_dir: tuple[Path, Path], tmp_path: Path) -> None:
     """If D1 != 10 throughout, no D0 / edge writes happen."""
     d1, d2 = cam_dir

@@ -204,3 +204,87 @@ def test_compose_frontback_returns_array_without_writing(tmp_path: Path) -> None
     assert composed.shape[2] == 3
     # No files created in tmp_path.
     assert list(tmp_path.iterdir()) == []
+
+
+# ----------------------------------------------------------------------
+# compose_frontback — offline camera handling (one image is None)
+# ----------------------------------------------------------------------
+def test_compose_frontback_handles_missing_cam1() -> None:
+    """When cam1 is offline, compose succeeds and the left half of the
+    composition is a dark OFFLINE placeholder while the right half shows
+    the bright cam2 image."""
+    img2 = _solid(640, 480, (180, 180, 180))  # bright grey
+    composed = compose_frontback(None, img2, is_front=False)
+    assert isinstance(composed, np.ndarray)
+    h, w = composed.shape[:2]
+
+    # Compare panel-wide brightness rather than spot pixels (would collide
+    # with the green crosshair or text strokes).
+    left_panel = composed[:, : w // 2 - 2]   # exclude central white separator
+    right_panel = composed[:, w // 2 + 2 :]
+    assert left_panel.mean() < right_panel.mean() - 80, (
+        f"left panel should be dark OFFLINE placeholder; got "
+        f"left_mean={left_panel.mean():.1f}, right_mean={right_panel.mean():.1f}"
+    )
+
+
+def test_compose_frontback_handles_missing_cam2() -> None:
+    img1 = _solid(640, 480, (180, 180, 180))
+    composed = compose_frontback(img1, None, is_front=True)
+    h, w = composed.shape[:2]
+    left_panel = composed[:, : w // 2 - 2]
+    right_panel = composed[:, w // 2 + 2 :]
+    assert right_panel.mean() < left_panel.mean() - 80, (
+        f"right panel should be dark OFFLINE placeholder; got "
+        f"left_mean={left_panel.mean():.1f}, right_mean={right_panel.mean():.1f}"
+    )
+
+
+def test_compose_frontback_handles_both_missing() -> None:
+    """Edge case: both cameras dropped. Compose still produces a frame
+    (so the display loop doesn't crash) — just two dark placeholders."""
+    composed = compose_frontback(None, None, is_front=False)
+    assert isinstance(composed, np.ndarray)
+    # The composition is dominated by black placeholder pixels; allow
+    # plenty of slack for white borders / red title text / hint text.
+    assert composed.mean() < 60, (
+        "both-offline composition should be dominated by dark placeholder"
+    )
+
+
+def test_compose_frontback_uses_loser_color_when_one_offline() -> None:
+    """When one camera is offline the algorithm doesn't run, so neither
+    panel should get the winner-grey bar — both are loser-blue to avoid
+    implying a pass/fail on a stale or absent capture."""
+    img2 = _solid(640, 480, (255, 255, 255))
+    composed = compose_frontback(None, img2, is_front=True)  # is_front ignored
+    h, w = composed.shape[:2]
+
+    # Bottom row sits inside the colour bar (bar height = 25, plus white
+    # 2px border at bottom — sample a few pixels up to clear the border).
+    bar_row = composed[h - 5, :, :]
+    left_bar_pixel = bar_row[w // 4]
+    right_bar_pixel = bar_row[3 * w // 4]
+    # Both should be _COLOR_LOSER (255, 0, 0) BGR.
+    assert tuple(int(c) for c in left_bar_pixel) == (255, 0, 0)
+    assert tuple(int(c) for c in right_bar_pixel) == (255, 0, 0)
+
+
+def test_render_frontback_writes_when_cam1_missing(tmp_path: Path) -> None:
+    """Even with cam1 None, both display sinks still get written so the
+    operator screen reflects the missing camera every cycle."""
+    out_png = tmp_path / "p.png"
+    out_rgb565 = tmp_path / "p.rgb565"
+    render_frontback(
+        None,
+        _solid(640, 480, (200, 200, 200)),
+        is_front=False,
+        png_path=out_png,
+        rgb565_path=out_rgb565,
+    )
+    assert out_png.is_file()
+    assert out_rgb565.is_file()
+    # rgb565 header must still be valid.
+    data = out_rgb565.read_bytes()
+    width, height = struct.unpack("<ii", data[:8])
+    assert width > 0 and height > 0

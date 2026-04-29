@@ -52,18 +52,88 @@ _BAR_HEIGHT = 25
 _BORDER_WIDTH = 2
 _SEPARATOR_WIDTH = 2
 
+# Default placeholder size when both cameras are missing — typical Hikvision
+# GigE frame is 1280x800 (the resize step crunches it down to 0.4x anyway,
+# so the exact value mostly affects text legibility).
+_PLACEHOLDER_DEFAULT_SIZE = (800, 1280)  # (height, width)
 
-def compose_frontback(image1: np.ndarray, image2: np.ndarray, is_front: bool) -> np.ndarray:
-    """Build the dual-camera composed BGR image. Pure CPU, no I/O."""
-    panel1 = _build_panel(image1)
-    panel2 = _build_panel(image2)
 
-    # Original logic:
-    #   if not result:                     # cam2 won (= "Back")
-    #       img1 -> blue bar, img2 -> grey
-    #   else:                              # cam1 won (= "Front")
-    #       img2 -> blue bar, img1 -> grey
-    if is_front:
+def _offline_placeholder(camera_num: int, ref_shape: tuple[int, int] | None = None) -> np.ndarray:
+    """Black panel showing 'CAM N OFFLINE' + a hint to check cable/power/IP.
+
+    Used by `compose_frontback` when one camera failed to capture but the
+    other succeeded — substituting this for the missing image lets the
+    operator screen still update each cycle, so a dropped camera shows up
+    immediately instead of a frozen old frame.
+
+    `ref_shape` is `(height, width)` of the working camera's frame; matching
+    those dimensions keeps the dual-panel layout balanced visually.
+    """
+    h, w = ref_shape if ref_shape is not None else _PLACEHOLDER_DEFAULT_SIZE
+    panel = np.zeros((h, w, 3), dtype=np.uint8)
+
+    title = f"CAM {camera_num} OFFLINE"
+    title_scale = max(1.5, w / 600.0)
+    title_thickness = max(2, int(title_scale * 2))
+    (tw, th), _ = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, title_scale, title_thickness)
+    cv2.putText(
+        panel, title,
+        ((w - tw) // 2, h // 2 - 20),
+        cv2.FONT_HERSHEY_SIMPLEX, title_scale, (0, 0, 255), title_thickness, cv2.LINE_AA,
+    )
+
+    hint = "CHECK CABLE / POWER / IP"
+    hint_scale = max(0.7, w / 1200.0)
+    hint_thickness = max(1, int(hint_scale * 1.5))
+    (hw_, _), _ = cv2.getTextSize(hint, cv2.FONT_HERSHEY_SIMPLEX, hint_scale, hint_thickness)
+    cv2.putText(
+        panel, hint,
+        ((w - hw_) // 2, h // 2 + th + 30),
+        cv2.FONT_HERSHEY_SIMPLEX, hint_scale, (255, 255, 255), hint_thickness, cv2.LINE_AA,
+    )
+
+    return panel
+
+
+def compose_frontback(
+    image1: np.ndarray | None,
+    image2: np.ndarray | None,
+    is_front: bool,
+) -> np.ndarray:
+    """Build the dual-camera composed BGR image. Pure CPU, no I/O.
+
+    Either image may be None — a 'CAM N OFFLINE' placeholder is substituted
+    so the operator screen stays live and shows which camera dropped. When
+    a camera is offline `is_front` is meaningless (the algorithm wasn't
+    run), so both panels get the loser-colour bar to avoid implying a
+    spurious pass/fail result.
+    """
+    # Match placeholder dimensions to whichever camera DID capture, so the
+    # two panels stay the same size after the 0.4x downscale.
+    ref_shape: tuple[int, int] | None = None
+    if image1 is not None:
+        ref_shape = image1.shape[:2]
+    elif image2 is not None:
+        ref_shape = image2.shape[:2]
+
+    img1 = image1 if image1 is not None else _offline_placeholder(1, ref_shape)
+    img2 = image2 if image2 is not None else _offline_placeholder(2, ref_shape)
+
+    panel1 = _build_panel(img1)
+    panel2 = _build_panel(img2)
+
+    one_offline = image1 is None or image2 is None
+    if one_offline:
+        # Algorithm didn't run; show neutral loser-colour on both to avoid
+        # signalling a winner.
+        panel1 = _add_color_bar(panel1, _COLOR_LOSER)
+        panel2 = _add_color_bar(panel2, _COLOR_LOSER)
+    elif is_front:
+        # Original logic:
+        #   if not result:                     # cam2 won (= "Back")
+        #       img1 -> blue bar, img2 -> grey
+        #   else:                              # cam1 won (= "Front")
+        #       img2 -> blue bar, img1 -> grey
         panel1 = _add_color_bar(panel1, _COLOR_WINNER)
         panel2 = _add_color_bar(panel2, _COLOR_LOSER)
     else:
@@ -94,8 +164,8 @@ def compose_frontback(image1: np.ndarray, image2: np.ndarray, is_front: bool) ->
 
 
 def render_frontback(
-    image1: np.ndarray,
-    image2: np.ndarray,
+    image1: np.ndarray | None,
+    image2: np.ndarray | None,
     is_front: bool,
     png_path: str | Path | None = DEFAULT_PNG_PATH,
     rgb565_path: str | Path | None = DEFAULT_RGB565_PATH,
@@ -105,6 +175,11 @@ def render_frontback(
     Either path can be set to None to skip that sink. Default writes both;
     most legacy customers' image_updater watches the rgb565 sink, while
     older sites still using feh/fbi watch the PNG one.
+
+    Either image may be None — `compose_frontback` substitutes an OFFLINE
+    placeholder so the operator screen still updates with which camera
+    dropped. Caller is responsible for skipping algorithm/PLC writes in
+    that case (see `LegacyFronbackOrchestrator._do_frontback`).
     """
     composed = compose_frontback(image1, image2, is_front)
     _write_sinks(composed, png_path, rgb565_path)

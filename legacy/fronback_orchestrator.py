@@ -201,6 +201,12 @@ class LegacyFronbackOrchestrator:
                 f"[Legacy] frontback skipped: cam1={'ok' if img1 is not None else 'offline'}, "
                 f"cam2={'ok' if img2 is not None else 'offline'}"
             )
+            # Render the display anyway so the operator sees which camera
+            # dropped (with a CAM N OFFLINE placeholder) rather than a
+            # frozen old frame. Algorithm did not run, so D0/D20-D23 are
+            # left untouched — `is_front` is a don't-care for the placeholder
+            # path (compose_frontback ignores it when one image is None).
+            await asyncio.to_thread(self._render_frontback_display, img1, img2, False)
             return
 
         roi1 = self.get_roi(1)
@@ -265,10 +271,16 @@ class LegacyFronbackOrchestrator:
 
     # -------------------------------------------------------------- helpers
 
-    def _render_frontback_display(self, img1: np.ndarray, img2: np.ndarray, is_front: bool) -> None:
+    def _render_frontback_display(
+        self,
+        img1: np.ndarray | None,
+        img2: np.ndarray | None,
+        is_front: bool,
+    ) -> None:
         """Wrapper that swallows render errors so display problems never
         block PLC writes — the production line keeps running even if the
-        operator screen fails."""
+        operator screen fails. Either image may be None when a camera is
+        offline; `render_frontback` handles that with a placeholder."""
         try:
             render_frontback(img1, img2, is_front, self.png_path, self.rgb565_path)
         except Exception as e:
