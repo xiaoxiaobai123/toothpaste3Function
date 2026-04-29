@@ -128,8 +128,12 @@ def test_frontback_writes_rgb565_with_header(tmp_path: Path) -> None:
     assert len(data) - 8 == expected_pixels
 
 
-def test_frontback_writes_both_sinks_atomically(tmp_path: Path) -> None:
-    """Both sinks write; rgb565 uses tmp+rename to avoid torn reads."""
+def test_frontback_writes_both_sinks(tmp_path: Path) -> None:
+    """Both sinks land on disk — PNG via cv2.imwrite, RGB565 via direct
+    write that triggers IN_CLOSE_WRITE for the C image_updater. (Earlier
+    versions used os.replace; that was reverted in v0.3.3 because rename(2)
+    does not produce IN_CLOSE_WRITE on the destination, silently breaking
+    image_updater's inotify watch.)"""
     png_out = tmp_path / "processed.png"
     rgb565_out = tmp_path / "output_image.rgb565"
     img = _solid(800, 600, (128, 128, 128))
@@ -138,7 +142,8 @@ def test_frontback_writes_both_sinks_atomically(tmp_path: Path) -> None:
 
     assert png_out.is_file()
     assert rgb565_out.is_file()
-    # No leftover .tmp file from the atomic rename trick.
+    # Direct write — no .tmp file should ever appear (regression guard
+    # against re-introducing atomic rename, which broke v0.3.0..v0.3.2).
     assert not (tmp_path / "output_image.rgb565.tmp").exists()
 
 

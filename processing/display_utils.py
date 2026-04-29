@@ -12,7 +12,6 @@ pipeline that took the original implementation from 3 FPS to ~11 FPS.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import cv2
@@ -161,13 +160,20 @@ def convert_to_rgb565(image: np.ndarray) -> np.ndarray | None:
 
 
 def save_rgb565_with_header(image: np.ndarray, filename: str) -> None:
-    """Atomically write a 2-int32 (width, height) header + raw pixels.
+    """Write a 2-int32 (width, height) header + raw pixels — direct write.
 
-    Writes go to ``<filename>.tmp`` and are committed via ``os.rename``,
-    which is atomic on the same filesystem on Linux. The C ``image_updater``
-    watches ``filename`` with inotify ``IN_CLOSE_WRITE``; without the
-    rename, it could fire on a half-written file mid-1.3MB-write and
-    flash a torn frame to /dev/fb0.
+    NOT an atomic rename. The C ``image_updater`` watches ``filename`` with
+    inotify ``IN_CLOSE_WRITE`` only, and ``rename(2)`` on the destination
+    fires ``IN_MOVED_TO`` on the parent directory + ``IN_MOVE_SELF`` on the
+    old inode — neither is ``IN_CLOSE_WRITE``. Atomic-rename here would
+    silently break the display refresh chain on every customer that uses
+    the image_updater rgb565 pipeline (this is the v0.3.0–v0.3.2 bug fixed
+    in v0.3.3).
+
+    Tearing isn't a real concern with ``IN_CLOSE_WRITE``: it fires only
+    when the file descriptor closes, after the full 2.5 MB payload has
+    been written. The original tearing concern was about ``IN_MODIFY``,
+    which fires mid-write — but that's not what image_updater listens to.
 
     Accepts (H, W) uint16 (numpy fallback) and (H, W, 2) uint8 (OpenCV).
     """
@@ -177,13 +183,9 @@ def save_rgb565_with_header(image: np.ndarray, filename: str) -> None:
         height, width = image.shape
     header = np.array([width, height], dtype=np.int32)
 
-    target = Path(filename)
-    # Same directory + same filesystem → os.replace is atomic.
-    tmp = target.with_name(target.name + ".tmp")
-    with open(tmp, "wb") as f:
+    with open(filename, "wb") as f:
         f.write(header.tobytes())
         f.write(image.tobytes())
-    os.replace(tmp, target)
 
 
 def clear_caches() -> None:

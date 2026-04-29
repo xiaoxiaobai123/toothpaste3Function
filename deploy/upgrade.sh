@@ -273,17 +273,24 @@ fi
 systemctl daemon-reload
 ok "systemd reloaded"
 
-touch /dev/shm/output_image.rgb565
-chmod 666 /dev/shm/output_image.rgb565
-if [[ ! -L "$TARGET_DIR/output_image.rgb565" ]]; then
-    # If a real file is already there, back it up first.
-    if [[ -f "$TARGET_DIR/output_image.rgb565" ]]; then
-        mv "$TARGET_DIR/output_image.rgb565" "$TARGET_DIR/output_image.rgb565.bak.$TIMESTAMP"
-    fi
-    ln -sfn /dev/shm/output_image.rgb565 "$TARGET_DIR/output_image.rgb565"
-    chown -h "$OWN_USER:$OWN_GROUP" "$TARGET_DIR/output_image.rgb565" 2>/dev/null || true
+# /home/pi/output_image.rgb565 must be a regular file, not a symlink to
+# /dev/shm. Older upgrade.sh created the symlink for tmpfs perf, but the
+# combination of "symlink + Python's atomic rename" silently broke the
+# inotify chain that image_updater depends on (rename(2) doesn't fire
+# IN_CLOSE_WRITE on the destination — see save_rgb565_with_header in
+# processing/display_utils.py for the full reasoning, fixed in v0.3.3).
+#
+# 1Hz writes to a regular eMMC file are well within wear-leveling tolerance
+# for years of operation, so dropping the tmpfs trick is the simpler path.
+if [[ -L "$TARGET_DIR/output_image.rgb565" ]]; then
+    rm -f "$TARGET_DIR/output_image.rgb565"
 fi
-ok "tmpfs link ready"
+if [[ ! -f "$TARGET_DIR/output_image.rgb565" ]]; then
+    touch "$TARGET_DIR/output_image.rgb565"
+fi
+chmod 666 "$TARGET_DIR/output_image.rgb565"
+chown "$OWN_USER:$OWN_GROUP" "$TARGET_DIR/output_image.rgb565" 2>/dev/null || true
+ok "rgb565 sink ready (regular file at $TARGET_DIR/output_image.rgb565)"
 
 # ---------------------------------------------------------------------------
 # 7. Start with rollback safety net.
