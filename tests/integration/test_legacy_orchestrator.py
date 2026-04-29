@@ -133,7 +133,8 @@ async def test_frontback_one_cycle_writes_d0_and_edge_counts(
     cam = MockCameraManager({1: d1, 2: d2})
     roi = make_file_roi_provider(cam, base_dir=tmp_path, logger=_logger())
 
-    orchestrator = LegacyFronbackOrchestrator(legacy_plc, cam, roi, _logger())
+    display_path = tmp_path / "processed_image.png"
+    orchestrator = LegacyFronbackOrchestrator(legacy_plc, cam, roi, _logger(), display_path=display_path)
     task = asyncio.create_task(orchestrator.run())
 
     # Wait for at least one D0 write — that's the marker that a full cycle ran.
@@ -156,6 +157,10 @@ async def test_frontback_one_cycle_writes_d0_and_edge_counts(
     # cam1 has many more edges, expect FRONT (D0=1).
     d0_writes = [v[0] for addr, v in plc.writes if addr == REG_RECOGNITION_RESULT]
     assert d0_writes[-1] == RESULT_FRONT_OR_OK
+
+    # Display image written for the customer's existing feh/fbi viewer.
+    assert display_path.is_file(), "display PNG not produced"
+    assert display_path.stat().st_size > 0
 
 
 @pytest.mark.asyncio

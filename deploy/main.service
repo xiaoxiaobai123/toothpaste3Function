@@ -21,9 +21,14 @@ TTYReset=yes
 
 Restart=always
 
+# MVS SDK env vars: REQUIRED by libMvCameraControl.so (loaded via ctypes
+# from camera/base.py at runtime). Do NOT remove — the binary works fine
+# when launched directly from a shell because the shell inherits these
+# from /etc/profile.d, but systemd starts in a clean env, so the unit
+# file must declare them.
 Environment=MVCAM_SDK_PATH=/opt/MVS
 Environment=MVCAM_COMMON_RUNENV=/opt/MVS/lib
-Environment=LD_LIBRARY_PATH=/opt/MVS/lib/aarch64:/opt/halcon/lib/aarch64-linux
+Environment=LD_LIBRARY_PATH=/opt/MVS/lib/aarch64
 
 LimitNOFILE=500000
 LimitNPROC=65535

@@ -21,6 +21,15 @@
 
 set -euo pipefail
 
+for arg in "$@"; do
+    case "$arg" in
+        --help|-h)
+            sed -n '2,30p' "$0"
+            exit 0
+            ;;
+    esac
+done
+
 # ---------------------------------------------------------------------------
 # Locate paths relative to this script.
 # ---------------------------------------------------------------------------
@@ -134,13 +143,48 @@ if [[ ! -f "$TARGET_DIR/company_name.png" ]] && [[ -f "$RELEASE_DIR/company_name
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Update systemd units + tmpfs link (idempotent).
+# 6. Update systemd units + tmpfs link.
+#
+# Service files are ALWAYS replaced. The new binary requires the env
+# vars + tmpfs ExecStartPre + working directory baked into the shipped
+# main.service — keeping the customer's old service file would mean
+# missing LD_LIBRARY_PATH for libMvCameraControl.so, missing /dev/shm
+# setup, and other gotchas that make `systemctl start` fail in ways
+# that `./main` from a shell does not. We back up the old version so
+# rollback is one `cp` away if something turns out wrong.
 # ---------------------------------------------------------------------------
 log "6/8  Update systemd + tmpfs"
-cp "$SCRIPT_DIR/main.service" /etc/systemd/system/main.service
-[[ -f "$SCRIPT_DIR/image_updater.service" ]] && cp "$SCRIPT_DIR/image_updater.service" /etc/systemd/system/image_updater.service
+
+install_service_file() {
+    local src="$1"
+    local dst="$2"
+    local name
+    name="$(basename "$dst")"
+
+    if [[ ! -f "$src" ]]; then
+        return
+    fi
+
+    if [[ -f "$dst" ]]; then
+        if cmp -s "$src" "$dst"; then
+            ok "$name already up to date"
+            return
+        fi
+        local backup="${dst}.bak.${TIMESTAMP}"
+        cp "$dst" "$backup"
+        ok "$name updated (old saved to $backup)"
+    else
+        ok "$name installed for the first time"
+    fi
+
+    cp "$src" "$dst"
+}
+
+install_service_file "$SCRIPT_DIR/main.service" /etc/systemd/system/main.service
+install_service_file "$SCRIPT_DIR/image_updater.service" /etc/systemd/system/image_updater.service
+
 systemctl daemon-reload
-ok "systemd units installed"
+ok "systemd reloaded"
 
 touch /dev/shm/output_image.rgb565
 chmod 666 /dev/shm/output_image.rgb565

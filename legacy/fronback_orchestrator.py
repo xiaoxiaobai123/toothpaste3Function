@@ -31,6 +31,11 @@ from typing import Any
 import numpy as np
 
 from legacy.fronback_algorithms import compute_frontback, compute_height
+from legacy.fronback_display import (
+    DEFAULT_DISPLAY_PATH,
+    render_frontback,
+    render_height,
+)
 from legacy.fronback_protocol import (
     MODE_FRONTBACK,
     MODE_HEIGHT,
@@ -110,11 +115,13 @@ class LegacyFronbackOrchestrator:
         camera_manager: Any,
         roi_provider: Callable[[int], dict[str, int]],
         logger: logging.Logger,
+        display_path: str | Path = DEFAULT_DISPLAY_PATH,
     ) -> None:
         self.plc = plc
         self.cam = camera_manager
         self.get_roi = roi_provider
         self.logger = logger
+        self.display_path = str(display_path)
 
         self._exposure_cache: dict[int, int] = {}
 
@@ -202,10 +209,13 @@ class LegacyFronbackOrchestrator:
             f"-> D0={d0_value} ({'FRONT' if result.is_front else 'BACK'})"
         )
 
-        # Write D0 + D20-D23 in parallel.
+        # Write D0 + D20-D23 to the PLC in parallel with rendering the
+        # operator-screen image. The display write is local-disk I/O so
+        # it doesn't block the PLC ack — keeps the cycle time tight.
         await asyncio.gather(
             asyncio.to_thread(self.plc.write_recognition_result, d0_value),
             asyncio.to_thread(self.plc.write_edge_counts, result.edge1_count, result.edge2_count),
+            asyncio.to_thread(self._render_frontback_display, img1, img2, result.is_front),
         )
 
     # -------------------------------------------------------------- height
@@ -245,9 +255,25 @@ class LegacyFronbackOrchestrator:
         await asyncio.gather(
             asyncio.to_thread(self.plc.write_recognition_result, d0_value),
             asyncio.to_thread(self.plc.write_height_result, result.max_y_avg),
+            asyncio.to_thread(self._render_height_display, img),
         )
 
     # -------------------------------------------------------------- helpers
+
+    def _render_frontback_display(self, img1: np.ndarray, img2: np.ndarray, is_front: bool) -> None:
+        """Wrapper that swallows render errors so display problems never
+        block PLC writes — the production line keeps running even if the
+        operator screen fails."""
+        try:
+            render_frontback(img1, img2, is_front, self.display_path)
+        except Exception as e:
+            self.logger.error(f"[Legacy] display render failed: {e}")
+
+    def _render_height_display(self, image: np.ndarray) -> None:
+        try:
+            render_height(image, self.display_path)
+        except Exception as e:
+            self.logger.error(f"[Legacy] display render failed: {e}")
 
     async def _apply_exposure_if_changed(self, camera_num: int, exposure: int) -> None:
         if exposure <= 0:
