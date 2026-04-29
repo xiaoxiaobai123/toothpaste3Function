@@ -5,6 +5,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write   # required by softprops/action-gh-release to upload tarball + auto-notes
+
 jobs:
   build:
     runs-on: ubuntu-24.04-arm
