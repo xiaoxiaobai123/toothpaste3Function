@@ -1,7 +1,7 @@
-"""Hikvision GigE Vision camera abstraction."""
+"""Hikvision GigE Vision camera abstraction.
 
-from camera.base import CameraBase
-from camera.environment import setup_camera_environment
-from camera.manager import CameraManager
-
-__all__ = ["CameraBase", "CameraManager", "setup_camera_environment"]
+Submodules are imported lazily so unit tests and tools/simulate.py can
+use camera.mock.MockCameraManager without dragging in the MVS SDK
+(camera.base imports MvCameraControl_class, which is only available on
+hosts that have installed MVS).
+"""
