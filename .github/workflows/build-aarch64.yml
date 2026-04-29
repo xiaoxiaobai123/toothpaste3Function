@@ -30,6 +30,26 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libgl1 libglib2.0-0 binutils
 
+      - name: Install Hikvision MVS SDK (aarch64)
+        # Fetched from the build-deps branch, not the main commit, so the
+        # SDK doesn't bloat the application source tree. PyInstaller needs
+        # /opt/MVS/Samples/aarch64/Python/MvImport on sys.path during
+        # analysis to bundle MvCameraControl_class into the binary.
+        run: |
+          MVS_DEB=MVS-3.0.1_aarch64_20241128.deb
+          curl -fLsS -o "$MVS_DEB" \
+            "https://raw.githubusercontent.com/${{ github.repository }}/build-deps/${MVS_DEB}"
+          ls -la "$MVS_DEB"
+          sudo dpkg -i "$MVS_DEB" || sudo apt-get install -fy
+          test -d /opt/MVS/Samples/aarch64/Python/MvImport
+          test -e /opt/MVS/lib/aarch64/libMvCameraControl.so
+          echo "MVCAM_SDK_PATH=/opt/MVS" >> "$GITHUB_ENV"
+          echo "MVCAM_COMMON_RUNENV=/opt/MVS/lib" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/opt/MVS/lib/aarch64" >> "$GITHUB_ENV"
+          # PyInstaller's static analysis needs MvCameraControl_class.py on
+          # sys.path; setup_camera_environment() only runs at execution time.
+          echo "PYTHONPATH=/opt/MVS/Samples/aarch64/Python/MvImport" >> "$GITHUB_ENV"
+
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
@@ -64,9 +84,17 @@ jobs:
         run: pyinstaller --clean -y main.spec
 
       - name: Sanity-check the binary
+        # Confirm MvCameraControl_class actually got bundled — without this
+        # we wouldn't notice a regression where MVS install silently fails.
         run: |
           file dist/main
           ls -la dist/main
+          if strings dist/main | grep -qi "MvCameraControl_class\|MV_CC_CreateHandle"; then
+            echo "✓ MVS bindings bundled into binary"
+          else
+            echo "✗ MVS bindings missing — PyInstaller did not pick up MvCameraControl_class" >&2
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:

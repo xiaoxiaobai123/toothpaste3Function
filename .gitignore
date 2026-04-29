@@ -61,3 +61,6 @@ roi_coordinates_*.json
 
 # PyInstaller
 *.spec.bak
+
+# Hikvision MVS SDK installer (sourced from a build-deps GitHub release in CI)
+*.deb

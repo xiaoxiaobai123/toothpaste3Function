@@ -26,6 +26,20 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             libgl1 libglib2.0-0 binutils
 
+      - name: Install Hikvision MVS SDK (aarch64)
+        # Same as build-aarch64.yml — pulled from the build-deps branch so
+        # PyInstaller can analyze MvCameraControl_class and bundle it.
+        run: |
+          MVS_DEB=MVS-3.0.1_aarch64_20241128.deb
+          curl -fLsS -o "$MVS_DEB" \
+            "https://raw.githubusercontent.com/${{ github.repository }}/build-deps/${MVS_DEB}"
+          sudo dpkg -i "$MVS_DEB" || sudo apt-get install -fy
+          test -d /opt/MVS/Samples/aarch64/Python/MvImport
+          echo "MVCAM_SDK_PATH=/opt/MVS" >> "$GITHUB_ENV"
+          echo "MVCAM_COMMON_RUNENV=/opt/MVS/lib" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=/opt/MVS/lib/aarch64" >> "$GITHUB_ENV"
+          echo "PYTHONPATH=/opt/MVS/Samples/aarch64/Python/MvImport" >> "$GITHUB_ENV"
+
       - name: Install Python deps
         run: |
           python -m pip install --upgrade pip
@@ -54,6 +68,16 @@ jobs:
 
       - name: Build with PyInstaller
         run: pyinstaller --clean -y main.spec
+
+      - name: Sanity-check the binary
+        run: |
+          file dist/main
+          if strings dist/main | grep -qi "MvCameraControl_class\|MV_CC_CreateHandle"; then
+            echo "✓ MVS bindings bundled into binary"
+          else
+            echo "✗ MVS bindings missing" >&2
+            exit 1
+          fi
 
       - name: Bundle release artifacts
         run: |

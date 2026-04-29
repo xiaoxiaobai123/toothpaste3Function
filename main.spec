@@ -33,6 +33,13 @@ a = Analysis(
         'processing.registry',
         'processing.result',
         'processing.toothpaste_frontback',
+        # Hikvision MVS SDK — installed at /opt/MVS during CI build, picked
+        # up via PYTHONPATH=/opt/MVS/Samples/aarch64/Python/MvImport.
+        'MvCameraControl_class',
+        'CameraParams_const',
+        'CameraParams_header',
+        'MvErrorDefine_const',
+        'PixelType_header',
     ],
     hookspath=[],
     hooksconfig={},
