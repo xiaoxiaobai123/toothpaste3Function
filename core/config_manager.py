@@ -104,6 +104,25 @@ class ConfigManager:
     def get_plc_ip(self) -> str:
         return self.config["plc"]["ip"]
 
+    def get_plc_protocol(self) -> str:
+        """Return the PLC protocol selector.
+
+        Values:
+          "v2_unified"      — default. Per-camera ProductType in 18-word
+                              config block (D10..D27 / D30..D47), result
+                              block at D70.. — used by new sites.
+          "legacy_fronback" — drop-in for the original toothpastefronback
+                              program: D1 trigger, D2 mode, D0 result,
+                              D20-D23 edge counts, D40 height result.
+                              Routed through legacy/ subpackage.
+
+        Unknown values fall back to "v2_unified" with a warning logged
+        elsewhere — never raise here, since config_manager is touched
+        during every test.
+        """
+        value = self.config.get("plc_protocol", "v2_unified")
+        return value if value in {"v2_unified", "legacy_fronback"} else "v2_unified"
+
 
 # Module-level singleton, mirroring the original display layout.
 config = ConfigManager()

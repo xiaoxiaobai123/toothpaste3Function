@@ -14,7 +14,17 @@ Three PLC-selectable detection modes, each independently selectable per camera v
 
 The **display pipeline** (tmpfs output, RGB565 conversion, cached overlays, parallel asyncio writes) is ported from the `tianchangbigsmallcircle` display branch — that branch's circle-detection algorithms are *not* part of this project.
 
-> **Status:** P0 + P2 + P3 + P4 complete. All three algorithms implemented; `tools/simulate.py` runs any algorithm on saved images without hardware; `camera/mock.py` and `plc/mock.py` are drop-in TaskManager replacements for full-pipeline tests.
+> **Status:** P0–P4 complete + legacy fronback compatibility shim (`legacy/`).
+> All three algorithms implemented; `tools/simulate.py` runs any algorithm on saved images without hardware; existing toothpastefronback customers can drop in this binary with **zero PLC changes** by setting `"plc_protocol": "legacy_fronback"` in `config.json`.
+
+## Two PLC protocols supported
+
+| `plc_protocol` (in `config.json`) | Use when | Algorithms used | PLC layout |
+|---|---|---|---|
+| `v2_unified` *(default)* | New deployments (head, future products) | Selectable per-camera via D14/D34 (`ProductType`) | 18-word config blocks at D10..D27 / D30..D47, 17-word result blocks at D70.. / D90.. |
+| `legacy_fronback` | Existing toothpastefronback customers — drop-in replacement | TOOTHPASTE_FRONTBACK + HEIGHT_CHECK, mode-switched by D2 | Original protocol: D0/D1/D2/D3/D4 + D10-D11 + D20-D23 + D30-D36 + D40 |
+
+See [`docs/PLC寄存器手册.md`](docs/PLC寄存器手册.md) (中文,工程师手册;包含 legacy 协议附录).
 
 ## Performance baseline (inherited from display branch)
 

@@ -57,7 +57,9 @@ my_app.log.*
 output_image.rgb565
 processed_image.png
 license.key
-roi_coordinates_*.json
+# Customer-specific ROI files at the project root only.
+# Templates under legacy/sample_roi/ are tracked.
+/roi_coordinates_*.json
 
 # PyInstaller
 *.spec.bak

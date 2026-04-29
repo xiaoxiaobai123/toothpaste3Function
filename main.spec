@@ -33,6 +33,11 @@ a = Analysis(
         'processing.registry',
         'processing.result',
         'processing.toothpaste_frontback',
+        # Legacy fronback compatibility (selected via plc_protocol).
+        'legacy',
+        'legacy.fronback_algorithms',
+        'legacy.fronback_orchestrator',
+        'legacy.fronback_protocol',
         # Hikvision MVS SDK — installed at /opt/MVS during CI build, picked
         # up via PYTHONPATH=/opt/MVS/Samples/aarch64/Python/MvImport.
         'MvCameraControl_class',

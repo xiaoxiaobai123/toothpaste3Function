@@ -43,6 +43,39 @@ def test_processing_imports() -> None:
     from processing.brush_head import BrushHeadProcessor  # noqa: F401
 
 
+def test_legacy_imports() -> None:
+    """Legacy fronback compat layer is importable on hosts without MVS SDK."""
+    from legacy.fronback_algorithms import (  # noqa: F401
+        compute_frontback,
+        compute_height,
+    )
+    from legacy.fronback_orchestrator import (  # noqa: F401
+        LegacyFronbackOrchestrator,
+        make_file_roi_provider,
+    )
+    from legacy.fronback_protocol import (  # noqa: F401
+        MODE_FRONTBACK,
+        MODE_HEIGHT,
+        REG_CAPTURE_TRIGGER,
+        REG_RECOGNITION_RESULT,
+        TRIGGER_FIRE,
+        LegacyFronbackPLC,
+    )
+
+
+def test_plc_protocol_default_is_v2_unified() -> None:
+    """ConfigManager.get_plc_protocol() picks safe default."""
+    from core.config_manager import ConfigManager
+
+    cm = ConfigManager()
+    cm._config = {"cameras": {}, "plc": {"ip": "1.2.3.4"}}
+    assert cm.get_plc_protocol() == "v2_unified"
+    cm._config["plc_protocol"] = "legacy_fronback"
+    assert cm.get_plc_protocol() == "legacy_fronback"
+    cm._config["plc_protocol"] = "garbage_value"
+    assert cm.get_plc_protocol() == "v2_unified"  # falls back safely
+
+
 def test_product_type_values() -> None:
     """Confirm ProductType integer values match the PLC contract."""
     from plc.enums import ProductType

@@ -334,6 +334,154 @@ PLC 侧                              视觉机侧
 
 ---
 
-> 文档版本:v0.1.1 配套
-> 对应代码 commit:见 [`README.md`](../README.md) 中的版本徽章
+---
+
+# 附录:Legacy fronback 协议(老牙膏现场)
+
+> 这一节**只给沿用原 `toothpastefronback` 程序的现场客户**看。新软件升级到此版本时,**PLC 程序、寄存器、HMI 数值全部不动**——`config.json` 写一行就切换:
+>
+> ```json
+> { "plc_protocol": "legacy_fronback" }
+> ```
+>
+> 不写或写 `"v2_unified"` 走前面所有章节的新协议。
+
+## L.1 寄存器全表
+
+### 系统级 + 配置(PLC 写,视觉读)
+
+| D 地址 | 类型 | 名称 | 用途 |
+|:-:|:-:|:--|:--|
+| `D1` | uint16 | capture_trigger | 写 10 触发拍照,视觉处理完写回 0/1 |
+| `D2` | uint16 | workcamera_count | **模式开关**:1=双相机正反, 0=单相机高度 |
+| `D10` | uint16 | cam1_exposure | 正反模式下 cam1 曝光(微秒) |
+| `D11` | uint16 | cam2_exposure | 正反模式下 cam2 曝光(微秒) |
+| ~~`D12-13`~~ | ~~uint32~~ | ~~unrecognized_threshold~~ | **新版不再读取**,见 §L.4 |
+| `D30` | uint16 | height_cam2_exposure | 高度模式下 cam2 曝光 |
+| `D31` | uint16 | brightness_threshold | 高度模式亮度阈值(0-255) |
+| `D32` | uint16 | min_height | 高度模式最低有效 Y |
+| `D33` | uint16 | left_limit | 读但不用(协议保持) |
+| `D34` | uint16 | right_limit | 读但不用(协议保持) |
+| `D35` | uint16 | height_comparison | 高度模式判定阈值 |
+| `D36` | uint16 | width_comparison | 读但不用(协议保持) |
+
+### 结果(视觉写,PLC 读)
+
+| D 地址 | 类型 | 名称 | 用途 |
+|:-:|:-:|:--|:--|
+| `D0` | uint16 | recognition_result | **结果**:1=正面/OK, 2=反面/NG, 3=空管(仅高度模式) |
+| `D1` | uint16 | capture_trigger | 视觉机回写:0=收到处理中, 1=完成 |
+| `D3` | uint16 | cam1_status | 1=cam1 在线, 0=离线 |
+| `D4` | uint16 | cam2_status | 同上 |
+| `D20-D21` | uint32(LE 字序) | edge1_count | 正反模式 cam1 边缘像素数 |
+| `D22-D23` | uint32(LE 字序) | edge2_count | 正反模式 cam2 边缘像素数 |
+| `D40` | uint16 | height_result | 高度模式 top-10 列最大Y平均 |
+| `D41` | uint16 | width_result | 占位,目前不写 |
+
+## L.2 标准操作时序
+
+### 双相机正反 (D2=1)
+
+```
+PLC                                   视觉机
+ │                                      │
+ │ ① 配 D10/D11 曝光                    │
+ │ ② D2 = 1 (正反模式)                   │
+ │ ③ D1 = 10 (触发)                      │
+ │ ───────────────────────────────►    │
+ │                                      │ 块读 D1+D2 → 看到触发
+ │                                      │ 写 D1 = 0 (确认收到)
+ │ ◄───────────────────────────────    │
+ │                                      │ 块读 D10+D11 → 设两相机曝光
+ │                                      │ 并行采图 cam1+cam2
+ │                                      │ 算 Sobel 边缘数
+ │                                      │ result = (e1 > e2) ? 1 : 2
+ │                                      │ 并行写 D0, D3, D4, D20-23
+ │                                      │ 写 D1 = 1 (完成)
+ │ ◄───────────────────────────────    │
+ │                                      │
+ │ ④ 监 D1 == 1 → 读 D0 取结果            │
+ │   读 D20-23 取边缘数(可选,调阈值用)  │
+```
+
+### 单相机高度 (D2=0)
+
+```
+PLC                                   视觉机
+ │                                      │
+ │ ① 配 D30 曝光,D31 亮度阈值,           │
+ │   D32 最低有效Y, D35 判定阈值          │
+ │ ② D2 = 0 (高度模式)                   │
+ │ ③ D1 = 10 (触发)                      │
+ │ ───────────────────────────────►    │
+ │                                      │ 块读 D1+D2
+ │                                      │ 写 D1 = 0
+ │ ◄───────────────────────────────    │
+ │                                      │ 块读 D30..D36 (一次 7 寄存器)
+ │                                      │ 设 cam2 曝光,采 cam2
+ │                                      │ R 通道阈值化,列最大Y top10 平均
+ │                                      │ result = 1/2/3 (OK/NG/空)
+ │                                      │ 并行写 D0, D4, D40
+ │                                      │ 写 D1 = 1
+ │ ◄───────────────────────────────    │
+ │                                      │
+ │ ④ 监 D1 == 1 → 读 D0 + D40             │
+```
+
+## L.3 与原 fronback 程序的差异(全部不影响 PLC 行为)
+
+| 项 | 原 fronback | 新 legacy adapter | 客户感知 |
+|:--|:-:|:-:|:--|
+| 双相机采图 | 串行(先 cam1 再 cam2) | 并行(asyncio.gather) | **采图节拍快 ~50ms,结果一致** |
+| 双 PLC 写(D3+D4 / D20+D40) | 串行 | 并行 | 写完早 ~10ms |
+| D12/D13 unrecognized_threshold | 每 50ms 读两次,**结果丢弃** | **不读** | 每秒少 40 次 Modbus 读,客户无感 |
+| 块读 D30..D36 | 7 次单字读 | 1 次 7 字块读 | 高度模式快 ~20ms |
+| 块写 D20..D23 | 4 次单字写 | 1 次 4 字块写 | 边缘数下发快 ~5ms |
+| 边缘判定逻辑 | `e1 > e2` ? 1 : 2 | **完全一致** | 同一张图,**结果字节级相同** |
+| 高度判定逻辑 | R 通道,top10 平均 | **完全一致** | 同上 |
+
+## L.4 关于 `D12/D13 unrecognized_threshold`
+
+通过对原 `toothpastefronback` 仓库的全文检索:
+
+```
+$ grep -rn unrecognized fronback/ --include="*.py"
+plc_manager.py:19:  unrecognized_threshold = 0           # 全局变量声明
+plc_manager.py:20:  unrecognized_threshold_low = 0
+plc_manager.py:21:  unrecognized_threshold_high = 0
+plc_manager.py:281: ADDRESS_THRESHOLD_UNRECOGNIZED_LOW = 12
+plc_manager.py:282: ADDRESS_THRESHOLD_UNRECOGNIZED_HIGH = 13
+plc_manager.py:328: # Reading the unrecognized thresholds
+plc_manager.py:329: global unrecognized_threshold,unrecognized_threshold_low, unrecognized_threshold_high
+plc_manager.py:330: unrecognized_threshold_low = plc_communicator.read_data(...)[0]
+plc_manager.py:331: unrecognized_threshold_high = plc_communicator.read_data(...)[0]
+plc_manager.py:332: unrecognized_threshold = (unrecognized_threshold_high << 32) | low
+```
+
+**所有 8 处出现都在 `plc_manager.py`,且没有任何地方读取或使用这两个变量的值**(算法、判定、写回都不涉及它们)。原代码读了 D12/D13 后赋给全局变量然后再没用过。
+
+新版 legacy adapter 直接**不读 D12/D13**,每次循环少两次 Modbus 来回。如果客户那边发现哪个 ladder 真的需要"视觉机定期访问 D12/D13"(理论上不可能),改回去也是一行代码的事。
+
+## L.5 ROI 配置文件
+
+每台相机一份 JSON,跟原版一样:
+
+```
+roi_coordinates_192_168_2_10.json     # cam1 (IP 中的点用下划线代替)
+roi_coordinates_192_168_3_10.json     # cam2
+```
+
+文件内容:
+```json
+{"x1": 300, "y1": 100, "x2": 950, "y2": 850}
+```
+
+**部署时直接把现场用的两份文件 scp 到二进制同一目录**——格式和原 fronback 完全一致,不用动。
+
+模板见仓库 [`legacy/sample_roi/roi_coordinates_template.json`](../legacy/sample_roi/roi_coordinates_template.json)。
+
+---
+
+> 文档版本:v0.2.0 配套(legacy 协议适配层引入)
+> 对应代码 commit:见 [`README.md`](../README.md)
 > 有疑问请到仓库提 issue
