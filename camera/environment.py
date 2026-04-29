@@ -5,9 +5,10 @@ LD_LIBRARY_PATH on Linux. Must be called before importing
 MvCameraControl_class.
 
 Supported platforms:
-    Windows           x86_64
-    Linux             x86_64        (dev/build host)
-    Linux             aarch64       (production host: NanoPi-R5S, RK3568)
+    Windows  x86_64   (development hosts with MVS installed in
+                       C:\\Program Files (x86)\\MVS\\)
+    Linux    aarch64  (production target: NanoPi-R5S / RK3568, and the
+                       GitHub-hosted ubuntu-24.04-arm CI runner)
 """
 
 from __future__ import annotations
@@ -28,19 +29,12 @@ def setup_camera_environment() -> bool:
     if os_type == "Windows":
         lib_path = r"C:\Program Files (x86)\MVS\Development\Samples\Python\MvImport"
         sys.path.append(lib_path)
-    elif os_type == "Linux":
-        if arch_type == "aarch64":
-            lib_path = "/opt/MVS/Samples/aarch64/Python/MvImport"
-        elif arch_type == "x86_64":
-            os.environ["MVCAM_COMMON_RUNENV"] = "/opt/MVS/lib"
-            lib_path = "/opt/MVS/Samples/64/Python/MvImport"
-        else:
-            logger.error(f"Unsupported Linux architecture: {arch_type}")
-            return False
+    elif os_type == "Linux" and arch_type == "aarch64":
+        lib_path = "/opt/MVS/Samples/aarch64/Python/MvImport"
         sys.path.append(lib_path)
         os.environ["LD_LIBRARY_PATH"] = lib_path + os.pathsep + os.environ.get("LD_LIBRARY_PATH", "")
     else:
-        logger.error(f"Unsupported operating system: {os_type}")
+        logger.error(f"Unsupported platform: {os_type} on {arch_type} (expected Windows or Linux aarch64)")
         return False
 
     logger.info(f"Camera environment set up for {os_type} on {arch_type}")

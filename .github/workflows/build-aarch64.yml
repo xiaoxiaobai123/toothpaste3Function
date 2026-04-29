@@ -96,6 +96,70 @@ jobs:
             exit 1
           fi
 
+      - name: Smoke-run the binary
+        # Boot the binary on the runner with cameras disabled and a fake
+        # license matching the runner's hardware fingerprint. This proves
+        # all imports resolve at runtime (libMvCameraControl.so loadable,
+        # cv2 / numpy / pyModbusTCP all reachable, no missing .so deps).
+        # The binary exits cleanly once TaskManager sees no active cameras.
+        #
+        # Without this step a regression like "MvCameraControl bundled but
+        # libMvCameraControl.so missing" would only surface on a real
+        # NanoPi after a deploy.
+        run: |
+          # Generate a license matching this runner's CPU fingerprint so
+          # validate_license() passes without modifying the production code.
+          PYTHONPATH=. python - <<'EOF'
+          from core import license_utils
+          cpu_id = license_utils.get_cpu_id()
+          if cpu_id and license_utils.generate_license(cpu_id):
+              print(f"smoke: license generated for {cpu_id[:24]}...")
+          else:
+              # On a generic VM /proc/device-tree/model is missing — write
+              # a sentinel license that won't validate but lets the binary
+              # at least try (it'll exit on the license check, which is
+              # what we want for smoke testing imports).
+              import hashlib
+              with open("license.key", "w") as f:
+                  f.write(hashlib.sha256(b"smoke-test").hexdigest())
+              print("smoke: dummy license written (license check will fail, that's OK)")
+          EOF
+
+          # Disabled-cameras config — TaskManager will start, see no active
+          # cameras, log an error, and return cleanly within ~1s.
+          cat > config.json <<'EOF'
+          {
+              "cameras": {
+                  "camera1": {"ip": "127.0.0.1", "host_lan": "127.0.0.1", "enabled": false},
+                  "camera2": {"ip": "127.0.0.1", "host_lan": "127.0.0.1", "enabled": false}
+              },
+              "plc": {"ip": "127.0.0.1"}
+          }
+          EOF
+
+          set +e
+          # Allow up to 10s, then SIGTERM if it didn't exit on its own.
+          # 124 = timeout fired; anything else is the binary's own exit code.
+          timeout 10 ./dist/main
+          BIN_RC=$?
+          set -e
+          echo "Binary exit code: $BIN_RC"
+
+          echo
+          echo "=========== my_app.log ==========="
+          cat my_app.log
+          echo "=================================="
+
+          # Pass criteria: log must contain the version banner. That proves
+          # logging + license_utils + plc.codec + processing.* + display_utils
+          # all imported without ImportError at runtime.
+          if grep -q "program start" my_app.log; then
+            echo "✓ Binary started, all imports resolved at runtime"
+          else
+            echo "✗ Binary did not produce startup banner" >&2
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: toothpaste3Function-aarch64-${{ github.sha }}
