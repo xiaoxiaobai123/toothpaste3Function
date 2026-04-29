@@ -17,22 +17,30 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from camera.manager import CameraManager
 from plc.enums import (
     CameraResult,
     CameraStatus,
     CameraTriggerStatus,
     SystemStatus,
 )
-from plc.manager import PLCManager
 from processing import dispatch
 from processing.display_utils import (
     convert_to_rgb565,
     process_and_combine_images,
     save_rgb565_with_header,
 )
+
+# CameraManager / PLCManager are duck-typed at runtime — TaskManager just
+# calls methods on whatever object main.py passes in. Importing the real
+# implementations at module load would drag MvCameraControl_class into
+# x86 CI runs and break test_task_manager_pipeline.py (which uses the
+# Mock variants). Type-only imports here keep mypy happy without the
+# runtime cost.
+if TYPE_CHECKING:
+    from camera.manager import CameraManager
+    from plc.manager import PLCManager
 from processing.result import Outcome, ProcessResult
 
 
