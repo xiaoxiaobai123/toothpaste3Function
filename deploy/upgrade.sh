@@ -52,6 +52,33 @@ if [[ "${EUID:-1000}" -ne 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Refuse to run if the release was extracted directly into $TARGET_DIR.
+# In that case the new binary, image_updater, and tarball-shipped
+# company_name.png have already overwritten the customer's files BEFORE
+# this script saw them — so step 4's "backup current binary" would copy
+# the new binary as if it were a rollback target, and the operator's
+# logo is gone with no way to recover from this script.
+#
+# v0.3.1+ tarballs wrap their contents in a versioned directory so this
+# can't happen via `tar -xzf` from any cwd. The check is here for the
+# legacy v0.3.0 tarball and any future regression that flattens it.
+# ---------------------------------------------------------------------------
+if [[ "$RELEASE_DIR" == "$TARGET_DIR" ]]; then
+    err "Release directory equals install directory: $RELEASE_DIR"
+    err ""
+    err "The tarball was extracted directly into $TARGET_DIR, overwriting"
+    err "customer files (config.json is safe; license.key is safe; ROI files"
+    err "are safe — but main, image_updater, and company_name.png are now"
+    err "the tarball defaults, not the customer's previous versions)."
+    err ""
+    err "Recover by re-extracting into a fresh subdirectory:"
+    err "    rm -rf ~/release && mkdir ~/release"
+    err "    tar -xzf <path>/toothpaste3Function-vX.Y.Z-aarch64.tar.gz -C ~/release"
+    err "    sudo ~/release/*/deploy/upgrade.sh"
+    exit 1
+fi
+
+# ---------------------------------------------------------------------------
 # 1. Locate the new binary.
 # ---------------------------------------------------------------------------
 log "1/8  Locate new binary"

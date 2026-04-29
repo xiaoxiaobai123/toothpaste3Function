@@ -1,6 +1,6 @@
 # toothpaste3Function
 
-Industrial machine-vision system that combines **three product lines** into a single binary, with the optimized display pipeline from the production big/small-circle line. Built for aarch64 (NanoPi-R5S / RK3568) running Debian 11.
+Industrial machine-vision system that combines **three product lines** into a single binary, with the optimized display pipeline from the production big/small-circle line. Built for aarch64 (NanoPi-R5S / RK3568) running Debian 11 or newer (tested on Debian 11/12).
 
 ## What's in this project
 

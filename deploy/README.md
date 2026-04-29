@@ -1,6 +1,6 @@
 # 部署脚本
 
-部署到目标机器（NanoPi-R5S-LTS / RK3568 / aarch64 / Debian 11）的自动化脚本。
+部署到目标机器（NanoPi-R5S-LTS / RK3568 / aarch64 / Debian 11 或更新版本，已验证 Debian 11 与 Debian 12）的自动化脚本。
 
 ## 目录结构
 

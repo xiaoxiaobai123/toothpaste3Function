@@ -11,20 +11,38 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04-arm
+    # Build inside Debian 11 (GLIBC 2.31) — see build-aarch64.yml for the
+    # full reasoning. Resulting binary is portable to any Debian 11+ system.
+    container: python:3.11-bullseye
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
       - name: Install system libraries
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgl1 libglib2.0-0 binutils
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            curl libgl1 libglib2.0-0 binutils
+
+      - name: Verify build environment GLIBC baseline
+        # Mirrors the same check in build-aarch64.yml — catches any future
+        # change to the container directive that would silently ship a
+        # binary requiring newer GLIBC than customer NanoPis provide.
+        run: |
+          LIBPYTHON=$(find /usr/local/lib /usr/lib -name 'libpython3.11.so*' 2>/dev/null | head -1)
+          if [ -z "$LIBPYTHON" ]; then
+            echo "✗ libpython3.11.so not found — container layout changed?" >&2
+            exit 1
+          fi
+          HIGHEST=$(objdump -T "$LIBPYTHON" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -uV | tail -1)
+          ALLOWED="GLIBC_2.31"
+          if [ "$(printf '%s\n%s\n' "$HIGHEST" "$ALLOWED" | sort -V | tail -1)" != "$ALLOWED" ]; then
+            echo "✗ libpython at $LIBPYTHON requires $HIGHEST" >&2
+            echo "✗ Allowed maximum is $ALLOWED (oldest deploy target = Debian 11)." >&2
+            echo "✗ Restore the 'container: python:3.11-bullseye' directive in this workflow." >&2
+            exit 1
+          fi
+          echo "✓ Build env libpython requires only $HIGHEST (≤ $ALLOWED)"
 
       - name: Install Hikvision MVS SDK (aarch64)
         # Same as build-aarch64.yml — pulled from the build-deps branch so
@@ -33,7 +51,7 @@ jobs:
           MVS_DEB=MVS-3.0.1_aarch64_20241128.deb
           curl -fLsS -o "$MVS_DEB" \
             "https://raw.githubusercontent.com/${{ github.repository }}/build-deps/${MVS_DEB}"
-          sudo dpkg -i "$MVS_DEB" || sudo apt-get install -fy
+          dpkg -i "$MVS_DEB" || apt-get install -fy
           test -d /opt/MVS/Samples/aarch64/Python/MvImport
           echo "MVCAM_SDK_PATH=/opt/MVS" >> "$GITHUB_ENV"
           echo "MVCAM_COMMON_RUNENV=/opt/MVS/lib" >> "$GITHUB_ENV"
@@ -88,16 +106,23 @@ jobs:
           fi
 
       - name: Bundle release artifacts
+        # Wrap the tarball contents in a versioned top-level directory.
+        # Without this, `tar -xzf` extracts files into the current working
+        # directory — and field operators who run it from /home/pi end up
+        # overwriting the live `main` binary, customer config, and ROI
+        # files before upgrade.sh can preserve them. The wrapper directory
+        # forces a clean extraction site.
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          mkdir release
-          cp dist/main release/
-          cp dist/image_updater release/
-          cp -r deploy release/
-          cp config.example.json release/
-          cp company_name.png release/
-          cp README.md release/
-          tar -czvf "toothpaste3Function-${TAG}-aarch64.tar.gz" -C release .
+          DIRNAME="toothpaste3Function-${TAG}-aarch64"
+          mkdir "$DIRNAME"
+          cp dist/main "$DIRNAME/"
+          cp dist/image_updater "$DIRNAME/"
+          cp -r deploy "$DIRNAME/"
+          cp config.example.json "$DIRNAME/"
+          cp company_name.png "$DIRNAME/"
+          cp README.md "$DIRNAME/"
+          tar -czvf "${DIRNAME}.tar.gz" "$DIRNAME"
 
       - uses: softprops/action-gh-release@v2
         with:

@@ -5,13 +5,13 @@ The full step-by-step deployment runbook lives at [`deploy/README.md`](../deploy
 ## Target platform
 
 - Hardware: NanoPi-R5S-LTS / RK3568 / aarch64
-- OS: Debian 11
+- OS: Debian 11+ (verified on 11/12). The CI build container sets the GLIBC floor at 2.31; anything Debian 11 or newer runs.
 - Display path: `/dev/fb0` framebuffer + companion C `image_updater` binary watching `/dev/shm/output_image.rgb565` via inotify
 - Runtime deps shipped in `deploy/`: two systemd unit files + three shell scripts
 
 ## Build (CI)
 
-`.github/workflows/build-aarch64.yml` runs on `ubuntu-24.04-arm` (free GitHub-hosted ARM runner for public repos), produces `dist/main` via PyInstaller, and uploads it as an artifact.
+`.github/workflows/build-aarch64.yml` runs on `ubuntu-24.04-arm` (free GitHub-hosted ARM runner) **inside a `python:3.11-bullseye` container**, produces `dist/main` via PyInstaller, and uploads it as an artifact. The container is load-bearing: building on the runner host's Ubuntu 24.04 (GLIBC 2.39) bakes a GLIBC_2.38 dependency into bundled libpython, which fails to load on Debian 11/12 customers — exactly how v0.3.0 broke. The "Verify build environment GLIBC baseline" step in the workflow guards against accidentally removing the container directive.
 
 `.github/workflows/release.yml` is triggered by tag pushes (`v*`); it bundles `dist/main` + `deploy/` + `config.example.json` + `company_name.png` into a GitHub Release.
 

@@ -15,20 +15,47 @@ jobs:
   build:
     # GitHub-hosted ARM runner — free for public repositories.
     runs-on: ubuntu-24.04-arm
+    # Build inside Debian 11 (GLIBC 2.31) so the resulting binary runs on
+    # any Debian 11+ system. v0.3.0 was built on the runner's Ubuntu 24.04
+    # host (GLIBC 2.39), which made the bundled libpython require GLIBC_2.38
+    # symbols — those don't exist on Debian 11 (2.31) or Debian 12 (2.36),
+    # so the binary failed to load before any Python code could even run.
+    container: python:3.11-bullseye
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
       - name: Install system libraries
+        # Running as root inside the container — no sudo. curl is needed
+        # to pull the MVS .deb; the slim base image has it but the full
+        # python:3.11-bullseye includes git + gcc + make already (used
+        # by actions/checkout and the image_updater C build below).
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgl1 libglib2.0-0 binutils
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            curl libgl1 libglib2.0-0 binutils
+
+      - name: Verify build environment GLIBC baseline
+        # Catch anyone removing or bumping the `container:` directive without
+        # realizing the deployment impact. PyInstaller bundles whatever
+        # libpython is on the build machine; if that libpython references
+        # GLIBC > 2.31, the resulting binary won't load on Debian 11/12
+        # customer NanoPis. (This is exactly how v0.3.0 broke in the field.)
+        run: |
+          LIBPYTHON=$(find /usr/local/lib /usr/lib -name 'libpython3.11.so*' 2>/dev/null | head -1)
+          if [ -z "$LIBPYTHON" ]; then
+            echo "✗ libpython3.11.so not found — container layout changed?" >&2
+            exit 1
+          fi
+          HIGHEST=$(objdump -T "$LIBPYTHON" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -uV | tail -1)
+          ALLOWED="GLIBC_2.31"
+          if [ "$(printf '%s\n%s\n' "$HIGHEST" "$ALLOWED" | sort -V | tail -1)" != "$ALLOWED" ]; then
+            echo "✗ libpython at $LIBPYTHON requires $HIGHEST" >&2
+            echo "✗ Allowed maximum is $ALLOWED (oldest deploy target = Debian 11)." >&2
+            echo "✗ Restore the 'container: python:3.11-bullseye' directive in this workflow." >&2
+            exit 1
+          fi
+          echo "✓ Build env libpython requires only $HIGHEST (≤ $ALLOWED)"
 
       - name: Install Hikvision MVS SDK (aarch64)
         # Fetched from the build-deps branch, not the main commit, so the
@@ -40,7 +67,7 @@ jobs:
           curl -fLsS -o "$MVS_DEB" \
             "https://raw.githubusercontent.com/${{ github.repository }}/build-deps/${MVS_DEB}"
           ls -la "$MVS_DEB"
-          sudo dpkg -i "$MVS_DEB" || sudo apt-get install -fy
+          dpkg -i "$MVS_DEB" || apt-get install -fy
           test -d /opt/MVS/Samples/aarch64/Python/MvImport
           test -e /opt/MVS/lib/aarch64/libMvCameraControl.so
           echo "MVCAM_SDK_PATH=/opt/MVS" >> "$GITHUB_ENV"
