@@ -18,6 +18,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Mark workspace as safe for git
+        # See build-aarch64.yml for the rationale.
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Install system libraries
         run: |
           apt-get update

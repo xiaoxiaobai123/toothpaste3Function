@@ -25,6 +25,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Mark workspace as safe for git
+        # actions/checkout's own safe.directory write doesn't propagate
+        # cleanly when subsequent steps run as root inside a container
+        # (HOME differs from where checkout wrote the config). Without
+        # this, `git rev-parse --short HEAD` in "Inject version info"
+        # exits 128 with "dubious ownership".
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
       - name: Install system libraries
         # Running as root inside the container — no sudo. curl is needed
         # to pull the MVS .deb; the slim base image has it but the full
