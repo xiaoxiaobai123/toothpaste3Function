@@ -1,0 +1,21 @@
+# Force LF on files that run on Linux targets (aarch64 NanoPi or CI runners),
+# so cross-platform dev (Windows + Linux) stops corrupting line endings.
+
+# Shell scripts and systemd units must be LF or they fail to parse on Linux.
+*.sh         text eol=lf
+*.service    text eol=lf
+
+# CI workflows are parsed by the GitHub runner.
+*.yml        text eol=lf
+*.yaml       text eol=lf
+
+# Python source — same; PyInstaller and editors all handle LF cleanly.
+*.py         text eol=lf
+*.toml       text eol=lf
+
+# Markdown / JSON: keep portable defaults.
+*.md         text
+*.json       text
+
+# Binary assets — never touch.
+*.png        binary

@@ -1,0 +1,33 @@
+[Unit]
+Description=Vision Main Service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/
+
+# 确保 rgb565 输出文件在 tmpfs 里且有写权限
+# (/dev/shm 重启后会清空，所以每次启动前都要建)
+ExecStartPre=/bin/sh -c 'touch /dev/shm/output_image.rgb565 && chmod 666 /dev/shm/output_image.rgb565'
+
+# 等相机和 PLC 网络就绪
+ExecStartPre=/bin/sleep 4
+
+ExecStart=/home/pi/main
+
+StandardOutput=tty
+TTYPath=/dev/tty2
+TTYReset=yes
+
+Restart=always
+
+Environment=MVCAM_SDK_PATH=/opt/MVS
+Environment=MVCAM_COMMON_RUNENV=/opt/MVS/lib
+Environment=LD_LIBRARY_PATH=/opt/MVS/lib/aarch64:/opt/halcon/lib/aarch64-linux
+
+LimitNOFILE=500000
+LimitNPROC=65535
+LimitSTACK=32M
+
+[Install]
+WantedBy=multi-user.target

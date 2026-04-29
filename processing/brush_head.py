@@ -1,0 +1,490 @@
+"""Brush-head front/back detection (ProductType.BRUSH_HEAD).
+
+Pipeline (mirrors toothpasthead/image_processing.py):
+    1. Adaptive threshold + small-component filter to find bristle dots.
+    2. Convex hull of the dots, then min-area rect to define the head ROI.
+    3. Validate ROI by area + aspect ratio (rejects out-of-frame parts).
+    4. Rotate the image so the long edge of the head is horizontal.
+    5. Shrink the ROI on all sides to remove rim noise.
+    6. Adaptive-threshold the upper half and the lower half independently
+       and compare their dark-pixel densities.
+    7. Side classification:
+            upper > lower  → Front (1)
+            upper < lower  → Back  (2)
+            equal          → NG    (0)
+
+PLC parameter layout (raw_config[5..15]):
+    +5  shrink_pct          uint16   default 15  (5..30)
+    +6  adapt_block         uint16   default 31  (forced odd, ≥3)
+    +7  adapt_C             int16    default 8   (-128..127)
+    +8  dot_area_min        uint16   default 20
+    +9  dot_area_max        uint16   default 500
+    +10-11 roi_area_min     uint32   default 50000
+    +12-13 roi_area_max     uint32   default 500000
+    +14 roi_ratio_min × 10  uint16   default 15  (= 1.5)
+    +15 roi_ratio_max × 10  uint16   default 35  (= 3.5)
+
+The Outcome's `center` field carries the side code (1=Front, 2=Back) in x,
+mirroring the head repo's convention. `angle` stays at 0.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import cv2
+import numpy as np
+
+from core import log_config
+from plc.codec import word_to_int16, words_to_uint32
+from plc.enums import Endian
+from processing.algorithms import validate_and_adjust_param
+from processing.base import Processor
+from processing.result import Outcome, ProcessResult
+
+logger = log_config.setup_logging()
+
+
+class BrushHeadProcessor(Processor):
+    name = "BrushHead"
+
+    DEFAULTS: dict[str, float] = {
+        "shrink_pct": 15,
+        "adapt_block": 31,
+        "adapt_C": 8,
+        "dot_area_min": 20,
+        "dot_area_max": 500,
+        "roi_area_min": 50000,
+        "roi_area_max": 500000,
+        "roi_ratio_min": 1.5,
+        "roi_ratio_max": 3.5,
+    }
+
+    MIN_DOTS_FOR_HULL = 10
+    MIN_CROP_DIM = 20
+
+    def process(self, image: np.ndarray, settings: dict[str, Any]) -> Outcome:
+        try:
+            bp = self._parse_params(settings)
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            h_img, w_img = gray.shape
+
+            # 1. Find ROI by dot convex hull.
+            roi_result = self._find_roi_by_dots(gray, bp)
+            if roi_result is None:
+                logger.error("[BrushHead] no valid ROI found")
+                return Outcome(
+                    ProcessResult.NG,
+                    self._fail_image(image, "No valid ROI found", bp, h_img),
+                    (0.0, 0.0),
+                    0.0,
+                )
+
+            rect, box, _, roi_area, roi_ratio, dot_count = roi_result
+            center = rect[0]
+            long_len, short_len, long_angle = self._edge_info(box)
+            rot_angle = -long_angle if long_angle <= 90 else 180 - long_angle
+
+            # 2. Rotate image so the head's long axis is horizontal.
+            M, nw, nh = self._rotation_matrix(center, rot_angle, w_img, h_img)
+            rot_gray = cv2.warpAffine(gray, M, (nw, nh), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+            rc = M @ np.array([center[0], center[1], 1.0])
+            rcx, rcy = int(rc[0]), int(rc[1])
+            hl, hs = int(long_len / 2), int(short_len / 2)
+
+            roi_x1_rot = max(0, rcx - hl)
+            roi_x2_rot = min(nw, rcx + hl)
+            roi_y1_rot = max(0, rcy - hs)
+            roi_y2_rot = min(nh, rcy + hs)
+
+            # 3. Shrink ROI to drop edge noise.
+            shrink_pct = bp["shrink_pct"]
+            sl = int(long_len * shrink_pct / 100)
+            ss = int(short_len * shrink_pct / 100)
+            crop_x1 = max(0, rcx - hl + sl)
+            crop_x2 = min(nw, rcx + hl - sl)
+            crop_y1 = max(0, rcy - hs + ss)
+            crop_y2 = min(nh, rcy + hs - ss)
+
+            crop_gray = rot_gray[crop_y1:crop_y2, crop_x1:crop_x2]
+            crop_h, crop_w = crop_gray.shape
+            if crop_h < self.MIN_CROP_DIM or crop_w < self.MIN_CROP_DIM:
+                logger.error(f"[BrushHead] crop too small: {crop_w}x{crop_h}")
+                return Outcome(
+                    ProcessResult.NG,
+                    self._fail_image(image, "Crop too small", bp, h_img),
+                    (0.0, 0.0),
+                    0.0,
+                )
+
+            # 4. Compare upper-half vs lower-half dark-pixel density.
+            upper_density, lower_density = self._compute_densities(crop_gray, bp)
+            diff_pct = abs(upper_density - lower_density) / max(upper_density, lower_density, 1e-9) * 100
+
+            if upper_density > lower_density:
+                side_code, result = 1, ProcessResult.OK
+            elif upper_density < lower_density:
+                side_code, result = 2, ProcessResult.OK
+            else:
+                side_code, result = 0, ProcessResult.NG
+
+            logger.info(
+                f"[BrushHead] side={side_code} dots={dot_count} "
+                f"roi_area={roi_area:.0f} ratio={roi_ratio:.2f} "
+                f"upper={upper_density * 100:.1f}% lower={lower_density * 100:.1f}% "
+                f"diff={diff_pct:.1f}%"
+            )
+
+            # 5. Visualization on the original (unrotated) image.
+            M_inv = cv2.invertAffineTransform(M)
+            vis = self._draw_results(
+                image,
+                M_inv,
+                box,
+                long_angle,
+                rot_angle,
+                (roi_x1_rot, roi_y1_rot, roi_x2_rot, roi_y2_rot),
+                (crop_x1, crop_y1, crop_x2, crop_y2),
+                upper_density,
+                lower_density,
+                diff_pct,
+                side_code,
+                bp,
+                h_img,
+                dot_count,
+                roi_area,
+                roi_ratio,
+            )
+
+            # The Outcome.center carries the side code (head repo convention):
+            # x = side_code (1=Front, 2=Back, 0=NG), y = 0.
+            return Outcome(result, vis, (float(side_code), 0.0), 0.0)
+
+        except Exception as e:
+            logger.exception(f"[BrushHead] exception: {e}")
+            fail_vis = image.copy() if image is not None else np.zeros((100, 100, 3), dtype=np.uint8)
+            cv2.putText(
+                fail_vis,
+                f"Exception: {str(e)[:60]}",
+                (30, 50),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 0, 255),
+                2,
+            )
+            return Outcome(ProcessResult.EXCEPTION, fail_vis, (0.0, 0.0), 0.0)
+
+    # ------------------------------------------------------------------
+    # PLC parameter parsing
+    # ------------------------------------------------------------------
+    def _parse_params(self, settings: dict[str, Any]) -> dict[str, float]:
+        raw = settings.get("raw_config")
+        if not raw or len(raw) < 16:
+            logger.warning("[BrushHead] raw_config missing or short, using defaults")
+            return self.DEFAULTS.copy()
+
+        endian = settings.get("endian", Endian.LITTLE)
+
+        bp = {
+            "shrink_pct": validate_and_adjust_param(raw[5], self.DEFAULTS["shrink_pct"], 5, 30),
+            "adapt_block": self._sanitize_block_size(
+                int(raw[6]) if raw[6] != 0 else int(self.DEFAULTS["adapt_block"])
+            ),
+            "adapt_C": (word_to_int16(raw[7]) if raw[7] != 0 else self.DEFAULTS["adapt_C"]),
+            "dot_area_min": validate_and_adjust_param(raw[8], self.DEFAULTS["dot_area_min"], 1, 65535),
+            "dot_area_max": validate_and_adjust_param(raw[9], self.DEFAULTS["dot_area_max"], 1, 65535),
+            "roi_area_min": validate_and_adjust_param(
+                words_to_uint32(raw[10], raw[11], endian),
+                self.DEFAULTS["roi_area_min"],
+                1,
+                2**31,
+            ),
+            "roi_area_max": validate_and_adjust_param(
+                words_to_uint32(raw[12], raw[13], endian),
+                self.DEFAULTS["roi_area_max"],
+                1,
+                2**31,
+            ),
+            "roi_ratio_min": (raw[14] / 10.0 if raw[14] != 0 else self.DEFAULTS["roi_ratio_min"]),
+            "roi_ratio_max": (raw[15] / 10.0 if raw[15] != 0 else self.DEFAULTS["roi_ratio_max"]),
+        }
+
+        if bp["dot_area_min"] >= bp["dot_area_max"]:
+            logger.warning(
+                f"[BrushHead] dot_area inverted ({bp['dot_area_min']} >= {bp['dot_area_max']}), using defaults"
+            )
+            bp["dot_area_min"] = self.DEFAULTS["dot_area_min"]
+            bp["dot_area_max"] = self.DEFAULTS["dot_area_max"]
+
+        return bp
+
+    @staticmethod
+    def _sanitize_block_size(value: int) -> int:
+        if value < 3:
+            value = 3
+        if value % 2 == 0:
+            value += 1
+        return value
+
+    # ------------------------------------------------------------------
+    # ROI detection
+    # ------------------------------------------------------------------
+    def _find_roi_by_dots(
+        self, gray: np.ndarray, bp: dict[str, float]
+    ) -> tuple[Any, np.ndarray, np.ndarray, float, float, int] | None:
+        """Locate the brush head ROI from the convex hull of bristle dots."""
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        adapt = cv2.adaptiveThreshold(
+            blur,
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            int(bp["adapt_block"]),
+            int(bp["adapt_C"]),
+        )
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        adapt = cv2.morphologyEx(adapt, cv2.MORPH_OPEN, kernel, iterations=1)
+
+        cnts, _ = cv2.findContours(adapt, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        dots: list[tuple[float, float]] = []
+        for c in cnts:
+            a = cv2.contourArea(c)
+            if bp["dot_area_min"] < a < bp["dot_area_max"]:
+                m = cv2.moments(c)
+                if m["m00"] > 0:
+                    dots.append((m["m10"] / m["m00"], m["m01"] / m["m00"]))
+
+        dot_count = len(dots)
+        if dot_count < self.MIN_DOTS_FOR_HULL:
+            logger.warning(f"[BrushHead] too few dots: {dot_count} < {self.MIN_DOTS_FOR_HULL}")
+            return None
+
+        pts = np.array(dots, dtype=np.float32)
+        hull = cv2.convexHull(pts)
+        rect = cv2.minAreaRect(hull)
+        box = cv2.boxPoints(rect)
+
+        long_len, short_len, _ = self._edge_info(box)
+
+        roi_area = long_len * short_len
+        if not (bp["roi_area_min"] <= roi_area <= bp["roi_area_max"]):
+            logger.warning(
+                f"[BrushHead] ROI area {roi_area:.0f} outside [{bp['roi_area_min']}, {bp['roi_area_max']}]"
+            )
+            return None
+
+        roi_ratio = long_len / max(short_len, 1e-9)
+        if not (bp["roi_ratio_min"] <= roi_ratio <= bp["roi_ratio_max"]):
+            logger.warning(
+                f"[BrushHead] ROI ratio {roi_ratio:.2f} outside "
+                f"[{bp['roi_ratio_min']:.2f}, {bp['roi_ratio_max']:.2f}]"
+            )
+            return None
+
+        return rect, box, hull, roi_area, roi_ratio, dot_count
+
+    @staticmethod
+    def _edge_info(box: np.ndarray) -> tuple[float, float, float]:
+        """Return (long_len, short_len, long_edge_angle_deg) of a 4-point box."""
+        edges = []
+        for j in range(4):
+            p1, p2 = box[j], box[(j + 1) % 4]
+            length = float(np.linalg.norm(p2 - p1))
+            angle = float(np.degrees(np.arctan2(-(p2[1] - p1[1]), p2[0] - p1[0])) % 180)
+            edges.append((length, angle))
+        edges.sort(key=lambda e: e[0], reverse=True)
+        return edges[0][0], edges[2][0], edges[0][1]
+
+    @staticmethod
+    def _rotation_matrix(
+        center: tuple[float, float], rot_angle_deg: float, w: int, h: int
+    ) -> tuple[np.ndarray, int, int]:
+        """Build a rotation matrix and return the new canvas size."""
+        M = cv2.getRotationMatrix2D(center, rot_angle_deg, 1.0)
+        ca, sa = abs(M[0, 0]), abs(M[0, 1])
+        nw = int(h * sa + w * ca)
+        nh = int(h * ca + w * sa)
+        M[0, 2] += (nw - w) / 2
+        M[1, 2] += (nh - h) / 2
+        return M, nw, nh
+
+    # ------------------------------------------------------------------
+    # Density comparison
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _compute_densities(crop_gray: np.ndarray, bp: dict[str, float]) -> tuple[float, float]:
+        mid = crop_gray.shape[0] // 2
+        block = int(bp["adapt_block"])
+        c = int(bp["adapt_C"])
+        small_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+
+        upper = cv2.adaptiveThreshold(
+            cv2.GaussianBlur(crop_gray[:mid], (5, 5), 0),
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            block,
+            c,
+        )
+        upper = cv2.morphologyEx(upper, cv2.MORPH_OPEN, small_kernel, iterations=1)
+
+        lower = cv2.adaptiveThreshold(
+            cv2.GaussianBlur(crop_gray[mid:], (5, 5), 0),
+            255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            block,
+            c,
+        )
+        lower = cv2.morphologyEx(lower, cv2.MORPH_OPEN, small_kernel, iterations=1)
+
+        upper_density = float(np.count_nonzero(upper)) / upper.size
+        lower_density = float(np.count_nonzero(lower)) / lower.size
+        return upper_density, lower_density
+
+    # ------------------------------------------------------------------
+    # Drawing
+    # ------------------------------------------------------------------
+    def _fail_image(self, image: np.ndarray, msg: str, bp: dict[str, float], img_h: int) -> np.ndarray:
+        vis = image.copy()
+        cv2.putText(vis, msg, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+        self._draw_param_info(vis, bp, img_h)
+        return vis
+
+    @staticmethod
+    def _draw_param_info(
+        vis: np.ndarray,
+        bp: dict[str, float],
+        img_h: int,
+        dot_count: int = 0,
+        roi_area: float = 0,
+        roi_ratio: float = 0,
+    ) -> None:
+        y = img_h - 160
+        lines = [
+            f"shrink={bp['shrink_pct']:.0f}% block={int(bp['adapt_block'])} C={int(bp['adapt_C'])}",
+            f"dot_area={bp['dot_area_min']:.0f}-{bp['dot_area_max']:.0f}  dots={dot_count}",
+            f"roi_area={roi_area:.0f} ({bp['roi_area_min']:.0f}-{bp['roi_area_max']:.0f})",
+            f"roi_ratio={roi_ratio:.2f} ({bp['roi_ratio_min']:.1f}-{bp['roi_ratio_max']:.1f})",
+        ]
+        for line in lines:
+            cv2.putText(vis, line, (30, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1, cv2.LINE_AA)
+            y += 22
+
+    def _draw_results(
+        self,
+        original: np.ndarray,
+        M_inv: np.ndarray,
+        _box: np.ndarray,
+        long_angle: float,
+        rot_angle: float,
+        roi_rect_rot: tuple[int, int, int, int],
+        crop_rect_rot: tuple[int, int, int, int],
+        upper_density: float,
+        lower_density: float,
+        diff_pct: float,
+        side_code: int,
+        bp: dict[str, float],
+        img_h: int,
+        dot_count: int,
+        roi_area: float,
+        roi_ratio: float,
+    ) -> np.ndarray:
+        vis = original.copy()
+
+        roi_corners = self._transform_rect_to_original(M_inv, *roi_rect_rot)
+        cv2.drawContours(vis, [roi_corners], -1, (0, 0, 255), 2)
+
+        shrink_corners = self._transform_rect_to_original(M_inv, *crop_rect_rot)
+        cv2.drawContours(vis, [shrink_corners], -1, (0, 255, 0), 2)
+
+        crop_x1, crop_y1, crop_x2, crop_y2 = crop_rect_rot
+        mid_y_rot = (crop_y1 + crop_y2) // 2
+        mid_pt1, mid_pt2 = self._transform_line_to_original(M_inv, crop_x1, mid_y_rot, crop_x2)
+        cv2.line(vis, mid_pt1, mid_pt2, (0, 255, 255), 2)
+
+        if side_code == 1:
+            side_text, side_color = "FRONT (1)", (0, 255, 0)
+        elif side_code == 2:
+            side_text, side_color = "BACK (2)", (0, 100, 255)
+        else:
+            side_text, side_color = "UNKNOWN (0)", (0, 0, 255)
+        cv2.putText(vis, side_text, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.3, side_color, 3, cv2.LINE_AA)
+
+        cv2.putText(
+            vis,
+            f"Upper: {upper_density * 100:.1f}%",
+            (30, 90),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (255, 150, 0),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            vis,
+            f"Lower: {lower_density * 100:.1f}%",
+            (30, 120),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 150, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            vis,
+            f"Diff: {diff_pct:.1f}%",
+            (30, 150),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+        cv2.putText(
+            vis,
+            f"Dots: {dot_count}  Area: {roi_area:.0f}  Ratio: {roi_ratio:.2f}",
+            (30, 180),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (200, 200, 200),
+            1,
+            cv2.LINE_AA,
+        )
+
+        angle_text = f"Angle: {long_angle:.1f} deg" if abs(rot_angle) > 0.5 else "Angle: 0 deg"
+        cv2.putText(
+            vis, angle_text, (30, 205), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA
+        )
+
+        cv2.putText(
+            vis,
+            "Red=ROI  Green=Analysis  Yellow=Split",
+            (30, img_h - 15),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (180, 180, 180),
+            1,
+            cv2.LINE_AA,
+        )
+
+        self._draw_param_info(vis, bp, img_h, dot_count, roi_area, roi_ratio)
+        return vis
+
+    @staticmethod
+    def _transform_rect_to_original(M_inv: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> np.ndarray:
+        corners_rot = np.array([[x1, y1, 1], [x2, y1, 1], [x2, y2, 1], [x1, y2, 1]], dtype=np.float64)
+        corners_orig = (M_inv @ corners_rot.T).T
+        return corners_orig.astype(np.intp)
+
+    @staticmethod
+    def _transform_line_to_original(
+        M_inv: np.ndarray, x1: int, y: int, x2: int
+    ) -> tuple[tuple[int, int], tuple[int, int]]:
+        pts_rot = np.array([[x1, y, 1], [x2, y, 1]], dtype=np.float64)
+        pts_orig = (M_inv @ pts_rot.T).T
+        p1 = (int(pts_orig[0, 0]), int(pts_orig[0, 1]))
+        p2 = (int(pts_orig[1, 0]), int(pts_orig[1, 1]))
+        return p1, p2

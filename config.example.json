@@ -1,0 +1,26 @@
+{
+    "_comment": "Per-camera entries are camera1, camera2, ... — add or remove freely (1-N supported). 'enabled': false skips the camera at startup. Hardware ROI (width/height multiples of 4) cuts payload and capture time. Algorithm-side ROI in PLC D25-27/D45-47 is then relative to this smaller frame.",
+
+    "cameras": {
+        "camera1": {
+            "ip": "192.168.2.10",
+            "host_lan": "192.168.2.123",
+            "enabled": true
+        },
+        "camera2": {
+            "ip": "192.168.3.10",
+            "host_lan": "192.168.3.123",
+            "enabled": true,
+            "roi": {
+                "width": 800,
+                "height": 800,
+                "offset_x": 240,
+                "offset_y": 112
+            }
+        }
+    },
+
+    "plc": {
+        "ip": "192.168.1.10"
+    }
+}

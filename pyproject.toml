@@ -1,0 +1,85 @@
+[project]
+name = "toothpaste3function"
+version = "0.1.0"
+description = "Industrial machine-vision system: 3-in-1 inspection (toothpaste front/back, brush head front/back, big/small circle) with optimized display pipeline."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "xiaoxiaobai123" }]
+
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python-headless>=4.8",
+    "Pillow>=10.0",
+    "pyModbusTCP>=0.2.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.1",
+    "ruff>=0.1.0",
+    "mypy>=1.7",
+]
+build = [
+    "pyinstaller>=6.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Flat-layout packages discovered automatically; entry point is main.py.
+packages = ["core", "camera", "plc", "processing"]
+
+# ----------------------------------------------------------------------
+# Linting / formatting / type checking
+# ----------------------------------------------------------------------
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+]
+ignore = [
+    "E501",  # line too long (formatter handles)
+    "B008",  # function call in default argument (common with dataclass-like patterns)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["B011"]  # allow `assert` use in tests
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true     # MVS / pyModbusTCP have no stubs
+no_implicit_optional = true
+warn_unused_ignores = true
+# OpenCV's stubs are partial and produce a large amount of false-positive
+# overload-mismatch noise on routine calls. Keep mypy as advisory-level
+# for now; tighten when cv2-stubs improves.
+warn_return_any = false
+check_untyped_defs = false
+disable_error_code = ["call-overload", "union-attr", "arg-type", "unreachable", "index", "assignment"]
+
+[[tool.mypy.overrides]]
+module = ["cv2", "cv2.*", "MvCameraControl_class", "pyModbusTCP.*"]
+ignore_errors = true
+
+# ----------------------------------------------------------------------
+# Pytest
+# ----------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+addopts = "-ra --strict-markers"
+asyncio_mode = "auto"

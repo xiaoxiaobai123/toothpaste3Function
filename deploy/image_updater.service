@@ -1,0 +1,26 @@
+[Unit]
+Description=Image Updater Service
+After=network.target main.service
+Wants=main.service
+
+[Service]
+Type=simple
+User=root
+
+# 同样保证 rgb565 文件存在（双保险，防止 image_updater 比 main 先起）
+ExecStartPre=/bin/sh -c 'touch /dev/shm/output_image.rgb565 && chmod 666 /dev/shm/output_image.rgb565'
+
+# 等 framebuffer 和 main 就绪
+ExecStartPre=/bin/sleep 8
+
+# 注意：这里用 while true + sleep 5 死循环保活，不用 exit 0。
+# 原因：image_updater 启动时如果 inotify_add_watch 失败会 exit(1)，
+# 若 bash 包装层用 exit 0 的话 systemd 以为成功退出，不会重启。
+# 用死循环 + sleep 5 让 image_updater 挂了之后自动拉起来。
+ExecStart=/bin/bash -c 'while true; do if [ -e /dev/fb0 ]; then /home/pi/image_updater; sleep 5; fi; done'
+
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
