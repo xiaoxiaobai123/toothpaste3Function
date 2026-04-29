@@ -127,8 +127,51 @@ fi
 # 5. Install new binary + non-customer assets.
 # ---------------------------------------------------------------------------
 log "5/8  Install new files"
-install -m 0755 -o pi -g pi "$NEW_BINARY" "$TARGET_DIR/main"
-ok "binary -> $TARGET_DIR/main"
+
+# Detect whether image_updater was already part of this site's setup,
+# BEFORE we install our new copy. Used in step 6 to decide whether to
+# enable image_updater.service automatically. If the site uses feh/fbi
+# instead, we don't want to start a competing display process.
+HAD_IMAGE_UPDATER_BEFORE=0
+if [[ -x "$TARGET_DIR/image_updater" ]] || systemctl is-enabled --quiet image_updater.service 2>/dev/null; then
+    HAD_IMAGE_UPDATER_BEFORE=1
+fi
+
+# Determine the file owner. Default to "pi" because both old fronback
+# and current display branch deployments use it; fall back to root if
+# `pi` doesn't exist on this system. systemd runs the service as root
+# regardless, so ownership of the binary itself is largely cosmetic.
+if id pi >/dev/null 2>&1; then
+    OWN_USER=pi
+    OWN_GROUP=pi
+else
+    OWN_USER=root
+    OWN_GROUP=root
+    warn "user 'pi' does not exist — installing as root:root"
+fi
+
+install -m 0755 -o "$OWN_USER" -g "$OWN_GROUP" "$NEW_BINARY" "$TARGET_DIR/main"
+ok "binary -> $TARGET_DIR/main (owner $OWN_USER:$OWN_GROUP, mode 0755)"
+
+# image_updater: companion C binary that reads output_image.rgb565 and
+# pushes pixels to /dev/fb0. Built natively on the aarch64 CI runner and
+# included in the release tarball alongside `main`.
+NEW_IMAGE_UPDATER=""
+for candidate in "$RELEASE_DIR/image_updater" "$SCRIPT_DIR/image_updater" "$RELEASE_DIR/dist/image_updater"; do
+    if [[ -f "$candidate" ]]; then
+        NEW_IMAGE_UPDATER="$candidate"
+        break
+    fi
+done
+if [[ -n "$NEW_IMAGE_UPDATER" ]]; then
+    if [[ -f "$TARGET_DIR/image_updater" ]]; then
+        cp "$TARGET_DIR/image_updater" "$TARGET_DIR/image_updater.bak.$TIMESTAMP"
+    fi
+    install -m 0755 -o "$OWN_USER" -g "$OWN_GROUP" "$NEW_IMAGE_UPDATER" "$TARGET_DIR/image_updater"
+    ok "image_updater -> $TARGET_DIR/image_updater"
+else
+    warn "no image_updater in the release directory — keeping any existing one"
+fi
 
 # config.example.json: always update so the operator can see the new schema.
 if [[ -f "$RELEASE_DIR/config.example.json" ]]; then
@@ -181,7 +224,24 @@ install_service_file() {
 }
 
 install_service_file "$SCRIPT_DIR/main.service" /etc/systemd/system/main.service
-install_service_file "$SCRIPT_DIR/image_updater.service" /etc/systemd/system/image_updater.service
+
+# image_updater.service: install only when this site was already using
+# the rgb565 + image_updater display chain. Sites using feh/fbi to view
+# /tmp/processed_image.png don't want a competing /dev/fb0 writer.
+# Detection happened in step 5 BEFORE we copied our new binary, so
+# HAD_IMAGE_UPDATER_BEFORE reflects the *prior* state of this machine.
+HAS_IMAGE_UPDATER=0
+if [[ $HAD_IMAGE_UPDATER_BEFORE -eq 1 ]]; then
+    install_service_file "$SCRIPT_DIR/image_updater.service" /etc/systemd/system/image_updater.service
+    HAS_IMAGE_UPDATER=1
+    ok "image_updater.service installed (rgb565 display chain detected)"
+else
+    warn "image_updater chain not detected on this machine before upgrade"
+    warn "  → installed binary at $TARGET_DIR/image_updater for later opt-in"
+    warn "  → service NOT enabled — would compete with feh/fbi if those are running"
+    warn "  → to enable later: sudo systemctl enable --now image_updater.service"
+    systemctl disable image_updater.service >/dev/null 2>&1 || true
+fi
 
 systemctl daemon-reload
 ok "systemd reloaded"
@@ -194,7 +254,7 @@ if [[ ! -L "$TARGET_DIR/output_image.rgb565" ]]; then
         mv "$TARGET_DIR/output_image.rgb565" "$TARGET_DIR/output_image.rgb565.bak.$TIMESTAMP"
     fi
     ln -sfn /dev/shm/output_image.rgb565 "$TARGET_DIR/output_image.rgb565"
-    chown -h pi:pi "$TARGET_DIR/output_image.rgb565"
+    chown -h "$OWN_USER:$OWN_GROUP" "$TARGET_DIR/output_image.rgb565" 2>/dev/null || true
 fi
 ok "tmpfs link ready"
 
@@ -203,10 +263,14 @@ ok "tmpfs link ready"
 # ---------------------------------------------------------------------------
 log "7/8  Start services (with auto-rollback on failure)"
 systemctl enable main.service >/dev/null 2>&1 || true
-systemctl enable image_updater.service >/dev/null 2>&1 || true
+if [[ $HAS_IMAGE_UPDATER -eq 1 ]]; then
+    systemctl enable image_updater.service >/dev/null 2>&1 || true
+fi
 systemctl start main.service
 sleep 4
-systemctl start image_updater.service 2>/dev/null || true
+if [[ $HAS_IMAGE_UPDATER -eq 1 ]]; then
+    systemctl start image_updater.service 2>/dev/null || true
+fi
 sleep 4
 
 ROLLED_BACK=0
@@ -243,10 +307,23 @@ fi
 # ---------------------------------------------------------------------------
 log "8/8  Verify"
 ok "main.service active"
-if systemctl is-active --quiet image_updater.service; then
-    ok "image_updater.service active"
+if [[ $HAS_IMAGE_UPDATER -eq 1 ]]; then
+    if systemctl is-active --quiet image_updater.service; then
+        ok "image_updater.service active"
+    else
+        warn "image_updater.service not active (might still be retrying — check journalctl -u image_updater)"
+    fi
 else
-    warn "image_updater.service not active (might still be retrying — check journalctl -u image_updater)"
+    ok "image_updater.service skipped (display via /tmp/processed_image.png)"
+fi
+
+# Sanity check: license.key must be in $TARGET_DIR for the binary to find it.
+if [[ -f "$TARGET_DIR/license.key" ]]; then
+    ok "license.key present at $TARGET_DIR/license.key"
+else
+    warn "no license.key in $TARGET_DIR — the binary will exit on startup"
+    warn "  generate one in this directory:"
+    warn "    cd $TARGET_DIR && python3 /path/to/tools/generate_license.py"
 fi
 
 echo

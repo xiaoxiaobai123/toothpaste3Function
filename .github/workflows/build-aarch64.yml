@@ -83,6 +83,19 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller --clean -y main.spec
 
+      - name: Build image_updater (C, native aarch64)
+        # Companion display binary that reads the rgb565 file produced by
+        # the Python side and pushes pixels to /dev/fb0. Building on the
+        # same aarch64 runner as PyInstaller, no cross-compile fuss.
+        run: |
+          cd image_updater
+          make clean
+          make
+          file image_updater
+          ls -la image_updater
+          # Stage alongside dist/main so the artifact upload picks it up.
+          cp image_updater ../dist/
+
       - name: Sanity-check the binary
         # Confirm MvCameraControl_class actually got bundled — without this
         # we wouldn't notice a regression where MVS install silently fails.
@@ -178,6 +191,7 @@ jobs:
           name: toothpaste3Function-aarch64-${{ github.sha }}
           path: |
             dist/main
+            dist/image_updater
             deploy/
             config.example.json
             company_name.png

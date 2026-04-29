@@ -69,6 +69,14 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller --clean -y main.spec
 
+      - name: Build image_updater (C, native aarch64)
+        run: |
+          cd image_updater
+          make clean
+          make
+          file image_updater
+          cp image_updater ../dist/
+
       - name: Sanity-check the binary
         run: |
           file dist/main
@@ -84,6 +92,7 @@ jobs:
           TAG="${GITHUB_REF#refs/tags/}"
           mkdir release
           cp dist/main release/
+          cp dist/image_updater release/
           cp -r deploy release/
           cp config.example.json release/
           cp company_name.png release/

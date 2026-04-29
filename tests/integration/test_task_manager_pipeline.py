@@ -123,7 +123,14 @@ async def test_single_capture_produces_one_plc_write(
     task = asyncio.create_task(tm.run())
 
     try:
-        await _run_until(lambda: len(plc.results_log) >= 1, plc)
+        # Wait for both the PLC result AND the rgb565 file. PLC writes
+        # complete before the display thread does — cancelling on PLC
+        # alone races with the rgb565 write finishing in its worker.
+        rgb565_path = tmp_path / "output_image.rgb565"
+        await _run_until(
+            lambda: len(plc.results_log) >= 1 and rgb565_path.is_file(),
+            plc,
+        )
     finally:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

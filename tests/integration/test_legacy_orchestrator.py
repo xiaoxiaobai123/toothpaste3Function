@@ -133,14 +133,21 @@ async def test_frontback_one_cycle_writes_d0_and_edge_counts(
     cam = MockCameraManager({1: d1, 2: d2})
     roi = make_file_roi_provider(cam, base_dir=tmp_path, logger=_logger())
 
-    display_path = tmp_path / "processed_image.png"
-    orchestrator = LegacyFronbackOrchestrator(legacy_plc, cam, roi, _logger(), display_path=display_path)
+    png_path = tmp_path / "processed_image.png"
+    rgb565_path = tmp_path / "output_image.rgb565"
+    orchestrator = LegacyFronbackOrchestrator(
+        legacy_plc, cam, roi, _logger(), png_path=png_path, rgb565_path=rgb565_path
+    )
     task = asyncio.create_task(orchestrator.run())
 
-    # Wait for at least one D0 write — that's the marker that a full cycle ran.
+    # Wait for both the D0 write AND the display files. PLC writes finish
+    # before the display thread does — cancelling on D0 alone races with
+    # the rgb565 write completing in its asyncio.to_thread worker.
     deadline = asyncio.get_event_loop().time() + 3.0
     while asyncio.get_event_loop().time() < deadline:
-        if any(addr == REG_RECOGNITION_RESULT for addr, _ in plc.writes):
+        d0_done = any(addr == REG_RECOGNITION_RESULT for addr, _ in plc.writes)
+        files_done = png_path.is_file() and rgb565_path.is_file()
+        if d0_done and files_done:
             break
         await asyncio.sleep(0.05)
 
@@ -158,9 +165,14 @@ async def test_frontback_one_cycle_writes_d0_and_edge_counts(
     d0_writes = [v[0] for addr, v in plc.writes if addr == REG_RECOGNITION_RESULT]
     assert d0_writes[-1] == RESULT_FRONT_OR_OK
 
-    # Display image written for the customer's existing feh/fbi viewer.
-    assert display_path.is_file(), "display PNG not produced"
-    assert display_path.stat().st_size > 0
+    # Both display sinks should be written:
+    # - PNG for older sites still using feh/fbi
+    # - rgb565 for sites using image_updater + /dev/fb0
+    assert png_path.is_file(), "display PNG not produced"
+    assert png_path.stat().st_size > 0
+    assert rgb565_path.is_file(), "rgb565 file not produced for image_updater"
+    # Header (8 bytes) + at least one frame of pixels.
+    assert rgb565_path.stat().st_size > 8
 
 
 @pytest.mark.asyncio

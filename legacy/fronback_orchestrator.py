@@ -32,7 +32,8 @@ import numpy as np
 
 from legacy.fronback_algorithms import compute_frontback, compute_height
 from legacy.fronback_display import (
-    DEFAULT_DISPLAY_PATH,
+    DEFAULT_PNG_PATH,
+    DEFAULT_RGB565_PATH,
     render_frontback,
     render_height,
 )
@@ -115,13 +116,17 @@ class LegacyFronbackOrchestrator:
         camera_manager: Any,
         roi_provider: Callable[[int], dict[str, int]],
         logger: logging.Logger,
-        display_path: str | Path = DEFAULT_DISPLAY_PATH,
+        png_path: str | Path | None = DEFAULT_PNG_PATH,
+        rgb565_path: str | Path | None = DEFAULT_RGB565_PATH,
     ) -> None:
         self.plc = plc
         self.cam = camera_manager
         self.get_roi = roi_provider
         self.logger = logger
-        self.display_path = str(display_path)
+        # Either path may be None to disable that sink (e.g., test harnesses
+        # that don't want to touch /tmp or /home/pi).
+        self.png_path = str(png_path) if png_path is not None else None
+        self.rgb565_path = str(rgb565_path) if rgb565_path is not None else None
 
         self._exposure_cache: dict[int, int] = {}
 
@@ -265,13 +270,13 @@ class LegacyFronbackOrchestrator:
         block PLC writes — the production line keeps running even if the
         operator screen fails."""
         try:
-            render_frontback(img1, img2, is_front, self.display_path)
+            render_frontback(img1, img2, is_front, self.png_path, self.rgb565_path)
         except Exception as e:
             self.logger.error(f"[Legacy] display render failed: {e}")
 
     def _render_height_display(self, image: np.ndarray) -> None:
         try:
-            render_height(image, self.display_path)
+            render_height(image, self.png_path, self.rgb565_path)
         except Exception as e:
             self.logger.error(f"[Legacy] display render failed: {e}")
 

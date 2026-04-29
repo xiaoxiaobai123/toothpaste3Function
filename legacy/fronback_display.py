@@ -1,30 +1,32 @@
 """Display rendering for the legacy fronback protocol.
 
-Existing customers' machines have an external image viewer (typically
-`feh` or `fbi`) watching `/tmp/processed_image.png` and rendering it on
-the operator screen. The original toothpastefronback program wrote that
-file at the end of every detection cycle.
+Two output sinks every cycle, written in parallel:
 
-The new binary's v2 path uses a different display chain (rgb565 in
-/dev/shm + a separate C image_updater process). For legacy customers,
-we keep writing `/tmp/processed_image.png` so their existing display
-mechanism continues to work — drop-in compatibility.
+1. ``/home/pi/output_image.rgb565`` — the file that the C ``image_updater``
+   process watches via inotify and renders on /dev/fb0. This is what
+   actually shows up on the operator screen for sites running the
+   image_updater chain.
 
-What we render mirrors the original:
+2. ``/tmp/processed_image.png`` — the file that the original
+   toothpastefronback program wrote, used by older sites running
+   ``feh`` / ``fbi`` instead of image_updater. Cheap to keep writing
+   even on machines that no longer use it (PNG encode + write of a
+   small composed image is sub-millisecond on tmpfs).
+
+Composition mirrors the original program:
     Frontback mode:
-        [ cam1@0.4x + crosshair + color bar ]
-        [   white  ][ separator ][   white  ]
-        [ cam2@0.4x + crosshair + color bar ]
-        Color bar = blue on the "non-winning" side, grey on the "winning"
-        side. Matches process_and_display_with_scale.
+        [ cam1@0.4x + crosshair + colour bar ]
+        [   white  ][ separator ][   white   ]
+        [ cam2@0.4x + crosshair + colour bar ]
+        Colour bar = blue on the loser, grey on the winner — matches
+        process_and_display_with_scale's mapping.
 
     Height mode:
-        Raw cam2 frame, written unchanged.
-        Matches HeightBasedImageProcessor.process_and_analyze_image,
-        which only does `cv2.imwrite(img_file_path, self.original_image)`.
+        Raw cam2 frame, written unchanged. Matches
+        HeightBasedImageProcessor.process_and_analyze_image, which only
+        called ``cv2.imwrite(self.img_file_path, self.original_image)``.
 
-Output path is configurable so tests can write into a tmp_path; default
-is the original `/tmp/processed_image.png`.
+Both paths are configurable so tests can write into a tmp_path.
 """
 
 from __future__ import annotations
@@ -34,7 +36,10 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-DEFAULT_DISPLAY_PATH = "/tmp/processed_image.png"
+from processing.display_utils import convert_to_rgb565, save_rgb565_with_header
+
+DEFAULT_PNG_PATH = "/tmp/processed_image.png"
+DEFAULT_RGB565_PATH = "/home/pi/output_image.rgb565"
 
 # Colours from the original program (BGR storage).
 _COLOR_LOSER = (255, 0, 0)  # blue bar — what original wrote, unchanged
@@ -48,18 +53,8 @@ _BORDER_WIDTH = 2
 _SEPARATOR_WIDTH = 2
 
 
-def render_frontback(
-    image1: np.ndarray,
-    image2: np.ndarray,
-    is_front: bool,
-    output_path: str | Path = DEFAULT_DISPLAY_PATH,
-) -> Path:
-    """Build and write the dual-camera operator-screen image.
-
-    `is_front` mirrors the orchestrator's decision: True when cam1 has
-    more edges (D0 = 1). The colour-bar mapping below intentionally
-    matches the original program (loser-blue, winner-grey).
-    """
+def compose_frontback(image1: np.ndarray, image2: np.ndarray, is_front: bool) -> np.ndarray:
+    """Build the dual-camera composed BGR image. Pure CPU, no I/O."""
     panel1 = _build_panel(image1)
     panel2 = _build_panel(image2)
 
@@ -95,23 +90,59 @@ def render_frontback(
     )
 
     separator = np.full((panel1.shape[0], _SEPARATOR_WIDTH, 3), _COLOR_BORDER, dtype=np.uint8)
-    composed = cv2.hconcat([panel1, separator, panel2])
+    return cv2.hconcat([panel1, separator, panel2])
 
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out), composed)
-    return out
+
+def render_frontback(
+    image1: np.ndarray,
+    image2: np.ndarray,
+    is_front: bool,
+    png_path: str | Path | None = DEFAULT_PNG_PATH,
+    rgb565_path: str | Path | None = DEFAULT_RGB565_PATH,
+) -> np.ndarray:
+    """Compose + write to all configured display sinks.
+
+    Either path can be set to None to skip that sink. Default writes both;
+    most legacy customers' image_updater watches the rgb565 sink, while
+    older sites still using feh/fbi watch the PNG one.
+    """
+    composed = compose_frontback(image1, image2, is_front)
+    _write_sinks(composed, png_path, rgb565_path)
+    return composed
 
 
 def render_height(
     image: np.ndarray,
-    output_path: str | Path = DEFAULT_DISPLAY_PATH,
-) -> Path:
-    """Write the cam2 raw frame to disk — matches the original height path."""
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    cv2.imwrite(str(out), image)
-    return out
+    png_path: str | Path | None = DEFAULT_PNG_PATH,
+    rgb565_path: str | Path | None = DEFAULT_RGB565_PATH,
+) -> np.ndarray:
+    """Write the raw cam2 frame to display sinks — matches the original height path."""
+    _write_sinks(image, png_path, rgb565_path)
+    return image
+
+
+def _write_sinks(
+    image: np.ndarray,
+    png_path: str | Path | None,
+    rgb565_path: str | Path | None,
+) -> None:
+    """Common writer for both rendering modes.
+
+    Writes are independent — a failure on one path doesn't skip the other.
+    The orchestrator wraps the whole render call in try/except so display
+    failures never block PLC writes.
+    """
+    if png_path is not None:
+        out = Path(png_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out), image)
+
+    if rgb565_path is not None:
+        rgb565 = convert_to_rgb565(image)
+        if rgb565 is not None:
+            out = Path(rgb565_path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            save_rgb565_with_header(rgb565, str(out))
 
 
 # --------------------------------------------------------------------------- #

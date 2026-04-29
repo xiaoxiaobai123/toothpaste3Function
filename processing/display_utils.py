@@ -12,6 +12,7 @@ pipeline that took the original implementation from 3 FPS to ~11 FPS.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import cv2
@@ -160,7 +161,13 @@ def convert_to_rgb565(image: np.ndarray) -> np.ndarray | None:
 
 
 def save_rgb565_with_header(image: np.ndarray, filename: str) -> None:
-    """Write a 2-int32 (width, height) header followed by raw pixels.
+    """Atomically write a 2-int32 (width, height) header + raw pixels.
+
+    Writes go to ``<filename>.tmp`` and are committed via ``os.rename``,
+    which is atomic on the same filesystem on Linux. The C ``image_updater``
+    watches ``filename`` with inotify ``IN_CLOSE_WRITE``; without the
+    rename, it could fire on a half-written file mid-1.3MB-write and
+    flash a torn frame to /dev/fb0.
 
     Accepts (H, W) uint16 (numpy fallback) and (H, W, 2) uint8 (OpenCV).
     """
@@ -169,9 +176,14 @@ def save_rgb565_with_header(image: np.ndarray, filename: str) -> None:
     else:
         height, width = image.shape
     header = np.array([width, height], dtype=np.int32)
-    with open(filename, "wb") as f:
+
+    target = Path(filename)
+    # Same directory + same filesystem → os.replace is atomic.
+    tmp = target.with_name(target.name + ".tmp")
+    with open(tmp, "wb") as f:
         f.write(header.tobytes())
         f.write(image.tobytes())
+    os.replace(tmp, target)
 
 
 def clear_caches() -> None:
