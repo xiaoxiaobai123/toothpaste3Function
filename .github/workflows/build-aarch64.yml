@@ -160,6 +160,19 @@ jobs:
             exit 1
           fi
 
+          # Stash the log under a stable name so the artifact upload picks it up.
+          cp my_app.log smoke-run.log
+
+      - name: Upload smoke-run log
+        # Keep the log even if the smoke-run step fails — useful for debugging.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-run-log-${{ github.sha }}
+          path: smoke-run.log
+          if-no-files-found: warn
+          retention-days: 14
+
       - uses: actions/upload-artifact@v4
         with:
           name: toothpaste3Function-aarch64-${{ github.sha }}
