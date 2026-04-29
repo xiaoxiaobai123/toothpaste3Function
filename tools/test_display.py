@@ -47,8 +47,8 @@ class ProcessResult(Enum):
 
 
 # ---------- 类级缓存（和生产版本一致）----------
-_company_bar_cache = {}
-_result_bar_cache = {}
+_company_bar_cache: dict = {}
+_result_bar_cache: dict = {}
 
 _BAR_COLORS = {
     ProcessResult.OK: (0, 255, 0),
@@ -153,8 +153,8 @@ def convert_to_rgb565(image):
         return (r << 11) | (g << 5) | b
 
 
-_canvas_cache = {}
-_rgb565_cache = {}
+_canvas_cache: dict = {}
+_rgb565_cache: dict = {}
 
 
 def save_rgb565_with_header(image, filename):

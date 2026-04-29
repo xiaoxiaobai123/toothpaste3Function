@@ -79,26 +79,64 @@ Brush-head front/back detection via dot convex hull + density comparison.
 | `output_angle` | always 0 |
 | `result` | 1 if OK (decisive side found), 2 if NG/EXCEPTION |
 
-### `TOOTHPASTE_FRONTBACK` (1) — `ToothpasteFrontBackProcessor` *(P3)*
+### `TOOTHPASTE_FRONTBACK` (1) — `ToothpasteFrontBackProcessor` ✅
 
-Sobel edge counting inside an ROI loaded from `roi_coordinates_<camera_ip>.json` (or PLC-supplied corners). Layout TBD — will likely be:
+Sobel-X edge counting inside a PLC-defined ROI; classify by edge count.
 
-| Offset | Field | Notes |
-|---|---|---|
-| +5 | edge_threshold | grayscale cutoff for edge density |
-| +6 | edge_count_threshold | min edges → "front" |
-| +7-8 | roi_x1 | manual ROI x1 (uint32) |
-| +9-10 | roi_y1 | manual ROI y1 |
-| +11-12 | roi_x2 | manual ROI x2 |
-| +13-14 | roi_y2 | manual ROI y2 |
+**Read fields (offset relative to D10 / D30):**
 
-### `HEIGHT_CHECK` (2) — `HeightCheckProcessor` *(P3)*
+| Offset | Field | Type | Default if 0 | Notes |
+|---|---|---|---|---|
+| +5 | edge_intensity_threshold | uint16 | 30 | pixel intensity to count as "edge" (0-255) |
+| +6-7 | front_count_threshold | uint32 LE | 1000 | count >= this → Front (1) |
+| +8-9 | back_count_threshold | uint32 LE | 100 | count <  this → EXCEPTION (no product) |
+| +10 | roi_x1 | uint16 | 0 = full frame | |
+| +11 | roi_y1 | uint16 | 0 | |
+| +12 | roi_x2 | uint16 | 0 | |
+| +13 | roi_y2 | uint16 | 0 | |
+| +14..+17 | reserved | — | — | |
 
-Per-column max-Y of a single color-channel threshold, averaged over the top 10 columns. Layout TBD:
+If `front_count_threshold <= back_count_threshold` the processor logs a
+warning and falls back to defaults (the comparison would be ill-defined).
 
-| Offset | Field | Notes |
-|---|---|---|
-| +5 | channel | 0=R, 1=G, 2=B |
-| +6 | threshold | grayscale cutoff |
-| +7 | min_height | min Y to count |
-| +8 | height_decision | OK threshold for max-Y average |
+**Result encoding:**
+
+| Field | Meaning |
+|---|---|
+| `output_x` | side code: 1=Front, 2=Back, 0=EXCEPTION (no product) |
+| `output_y` | edge count (informational, useful for HMI tuning) |
+| `output_angle` | always 0 |
+| `result` | 1 if OK (Front or Back), 2 if EXCEPTION |
+
+### `HEIGHT_CHECK` (2) — `HeightCheckProcessor` ✅
+
+Per-column max-Y of a single colour channel, top-10 average compared
+against a decision threshold.
+
+**Read fields (offset relative to D10 / D30):**
+
+| Offset | Field | Type | Default if 0 | Notes |
+|---|---|---|---|---|
+| +5 | channel | uint16 | 2 | 0=R, 1=G, 2=B (BGR storage internally) |
+| +6 | pixel_threshold | uint16 | 100 | channel intensity threshold (0-255) |
+| +7 | min_height | uint16 | 100 | columns below this Y don't count → EMPTY (3) |
+| +8 | decision_threshold | uint16 | 300 | max-Y avg compared here |
+| +9 | roi_x1 | uint16 | 0 = full frame | |
+| +10 | roi_y1 | uint16 | 0 | |
+| +11 | roi_x2 | uint16 | 0 | |
+| +12 | roi_y2 | uint16 | 0 | |
+| +13..+17 | reserved | — | — | |
+
+**Result encoding:**
+
+| Field | Meaning |
+|---|---|
+| `output_x` | state code: 1=OK, 2=HIGH (over decision), 3=EMPTY, 0=EXCEPTION |
+| `output_y` | max-Y average (informational, useful for HMI tuning) |
+| `output_angle` | always 0 |
+| `result` | 1 if a decisive level was found (OK / HIGH), 2 if EMPTY or EXCEPTION |
+
+> Image-coordinate Y grows downward — a *lower* `max_y_avg` means the
+> toothpaste reached *higher* into the frame. The comparison direction
+> matches the original fronback implementation; if your camera mounting
+> reverses the sense, swap `OK` and `HIGH` thresholds on-site.

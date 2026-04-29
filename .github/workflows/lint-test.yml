@@ -36,8 +36,8 @@ jobs:
       - name: Mypy type check
         # Subpackages without external SDK deps. camera/base.py imports
         # MvCameraControl_class which is only available on hosts with the
-        # MVS SDK installed; we skip it on x86 CI.
-        run: mypy core plc processing
+        # MVS SDK installed; we skip it on x86 CI but cover everything else.
+        run: mypy core plc processing tools
 
       - name: Pytest
         run: pytest tests -v --maxfail=1

@@ -8,13 +8,13 @@ Three PLC-selectable detection modes, each independently selectable per camera v
 
 | ProductType (PLC value) | Algorithm | Origin |
 |---|---|---|
-| `TOOTHPASTE_FRONTBACK` (1) | Sobel edge counting in JSON-defined ROI | toothpastefronback (P3) |
-| `HEIGHT_CHECK` (2) | Per-column max-Y of color-channel threshold | toothpastefronback (P3) |
+| `TOOTHPASTE_FRONTBACK` (1) | Sobel edge counting in PLC-defined ROI | toothpastefronback ✅ |
+| `HEIGHT_CHECK` (2) | Per-column max-Y of color-channel threshold | toothpastefronback ✅ |
 | `BRUSH_HEAD` (3) | Adaptive threshold + dot convex hull + upper/lower density compare | toothpasthead ✅ |
 
 The **display pipeline** (tmpfs output, RGB565 conversion, cached overlays, parallel asyncio writes) is ported from the `tianchangbigsmallcircle` display branch — that branch's circle-detection algorithms are *not* part of this project.
 
-> **Status:** P0 + P2 complete. `BRUSH_HEAD` runs end-to-end via the abstract Processor interface; `TOOTHPASTE_FRONTBACK` and `HEIGHT_CHECK` arrive in P3.
+> **Status:** P0 + P2 + P3 + P4 complete. All three algorithms implemented; `tools/simulate.py` runs any algorithm on saved images without hardware; `camera/mock.py` and `plc/mock.py` are drop-in TaskManager replacements for full-pipeline tests.
 
 ## Performance baseline (inherited from display branch)
 

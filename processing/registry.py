@@ -15,11 +15,13 @@ from __future__ import annotations
 from plc.enums import ProductType
 from processing.base import Processor
 from processing.brush_head import BrushHeadProcessor
+from processing.height_check import HeightCheckProcessor
+from processing.toothpaste_frontback import ToothpasteFrontBackProcessor
 
 PROCESSORS: dict[ProductType, Processor] = {
+    ProductType.TOOTHPASTE_FRONTBACK: ToothpasteFrontBackProcessor(),
+    ProductType.HEIGHT_CHECK: HeightCheckProcessor(),
     ProductType.BRUSH_HEAD: BrushHeadProcessor(),
-    # ProductType.TOOTHPASTE_FRONTBACK → ToothpasteFrontBackProcessor()  (P3)
-    # ProductType.HEIGHT_CHECK         → HeightCheckProcessor()          (P3)
 }
 
 

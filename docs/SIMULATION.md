@@ -1,56 +1,115 @@
-# Simulation Mode *(P4)*
+# Simulation Mode
 
-Simulation lets the project run without cameras or a PLC, useful for
-algorithm tuning, regression testing, and CI golden tests on x86 hosts.
+The project ships with a no-hardware simulation surface for algorithm
+development, regression testing, and field-issue reproduction.
 
 ## Components
 
-- `camera/mock.py` — mock CameraBase that returns images from a folder
-  in response to capture/trigger calls.
-- `plc/mock.py` — mock PLCBase backed by a state-machine YAML file
-  describing the timing of register writes.
-- `tools/simulate.py` *(planned)* — CLI entry point that wires the mocks
-  to the real `TaskManager` and runs scenarios.
+| Module | Purpose |
+|---|---|
+| `tools/simulate.py` | CLI entry point: run a Processor on saved images. |
+| `camera/mock.py` (`MockCameraManager`) | Drop-in replacement for `CameraManager` that serves images from configured directories. |
+| `plc/mock.py` (`MockPLCManager`, `MockCameraConfig`) | Drop-in replacement for `PLCManager` backed by an in-memory state. Records all writes in `results_log` for assertions. |
 
-## Planned CLI
+## `tools/simulate.py` — single-image and folder modes
 
 ```bash
-# Single algorithm against a single image
+# Single image, save the overlay PNG
 python tools/simulate.py \
-  --product-type LARGE_CIRCLE \
-  --image tests/fixtures/large_circle/sample_01.png \
-  --plc-params 'gray_upper=120,area_lower=50000,roi_x=512,roi_y=640'
+    --product-type BRUSH_HEAD \
+    --image tests/fixtures/brush/sample.png \
+    --out result.png
 
-# Full scenario with mock cameras and a scripted PLC state machine
-python tools/simulate.py --scenario tests/scenarios/dual_camera_brush.yml
+# Toothpaste with custom thresholds
+python tools/simulate.py \
+    --product-type TOOTHPASTE_FRONTBACK \
+    --image sample.png \
+    --param edge_intensity_threshold=40 \
+    --param front_count_threshold=2000 \
+    --param back_count_threshold=300
 
-# Display pipeline only (no camera, no PLC) — works today via tools/test_display.py
-python tools/test_display.py --interval 0 --count 30 --profile
+# Height check on the green channel
+python tools/simulate.py \
+    --product-type HEIGHT_CHECK \
+    --image sample.png \
+    --param channel=1 \
+    --param decision_threshold=350
+
+# Batch over a folder, emit JSON one line per frame
+python tools/simulate.py \
+    --product-type BRUSH_HEAD \
+    --folder tests/fixtures/brush/ \
+    --json-summary
 ```
 
-## Scenario YAML schema *(P4 draft)*
+Each `--param key=value` is matched against the field names declared in
+the matching Processor module (see `processing/<algo>.py`); unknown
+names abort with a usage hint listing the accepted set.
 
-```yaml
-cameras:
-  1: { product_type: LARGE_CIRCLE, image_dir: tests/fixtures/large_circle/ }
-  2: { product_type: BRUSH_HEAD,   image_dir: tests/fixtures/brush/ }
+The CLI prints one line per image plus a summary tally:
 
-plc_state_machine:
-  - at: 0s
-    set: { cam1.status: IDLE, cam2.status: IDLE }
-  - at: 1s
-    set: { cam1.status: START_TASK }
-  - at: 2s
-    expect: { cam1.result: OK }
-  - at: 3s
-    set: { cam2.status: START_LOOP }
-  - at: 8s
-    set: { cam2.status: IDLE }
+```
+sample_01.png  result=OK   center=(   1.00,    0.00)  took= 12.4ms
+sample_02.png  result=OK   center=(   2.00,    0.00)  took= 11.2ms
+sample_03.png  result=NG   center=(   0.00,    0.00)  took= 13.1ms
+
+Summary: 3 images  OK=2  NG=1  EXC=0  avg=12.2ms
 ```
 
-## Golden tests
+## Full-pipeline simulation with `MockCameraManager` + `MockPLCManager`
 
-`tests/golden/` will hold fixed input images alongside expected outputs
-(JSON files with center, area, circularity, result). On CI, every
+For tests that need to exercise the whole `TaskManager` (state machine,
+asyncio loops, parallel write+combine), wire the mocks directly:
+
+```python
+import asyncio
+import logging
+from pathlib import Path
+
+from camera.mock import MockCameraManager
+from core.task_manager import TaskManager
+from plc.enums import CameraStatus, ProductType
+from plc.mock import MockCameraConfig, MockPLCManager
+
+
+async def run_pipeline_for_one_capture():
+    plc = MockPLCManager({
+        1: MockCameraConfig(
+            product_type=ProductType.BRUSH_HEAD,
+            status=CameraStatus.START_TASK,
+            raw_config=tuple([0, 5000, 0, 0, 3, 15, 31, 8, 20, 500,
+                              0, 0, 0, 0, 15, 35, 0, 0]),
+        ),
+    })
+    cam = MockCameraManager({1: Path("tests/fixtures/brush")})
+
+    tm = TaskManager(plc, cam, config=None, logger=logging.getLogger())
+    # Run for one cycle; cancel afterwards.
+    task = asyncio.create_task(tm.run())
+    await asyncio.sleep(0.5)
+    task.cancel()
+
+    assert plc.results_log, "TaskManager produced no results"
+    print(f"Last result: {plc.results_log[-1]}")
+```
+
+Both mocks expose the same public API as the real managers — see
+`camera/mock.py` and `plc/mock.py` for the methods covered. Anything
+unimplemented is a sign that TaskManager grew a new dependency that we
+haven't added a stub for; treat the resulting AttributeError as a test
+gap.
+
+## Golden tests *(future)*
+
+`tests/golden/` is reserved for fixed input images alongside expected
+outputs (JSON files: center, area, circularity, result). On CI, every
 algorithm change reruns the suite — any difference fails the build,
-preventing accidental regressions in unrelated algorithms.
+preventing accidental regressions in unrelated algorithms. Populate as
+real production images become available.
+
+## Display-only test (legacy)
+
+`tools/test_display.py` predates the simulation framework and tests only
+the rgb565 output pipeline (no camera, no PLC, no algorithm). Keep using
+it on freshly-imaged target hosts to verify the framebuffer / inotify /
+C `image_updater` chain before deploying the full binary.

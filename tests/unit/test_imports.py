@@ -54,15 +54,18 @@ def test_product_type_values() -> None:
 
 
 def test_registry_exposes_implemented_processors() -> None:
-    """Registry must contain every implemented ProductType, and only those."""
+    """Registry must contain every implemented ProductType."""
     from plc.enums import ProductType
     from processing import dispatch
     from processing.brush_head import BrushHeadProcessor
+    from processing.height_check import HeightCheckProcessor
+    from processing.toothpaste_frontback import ToothpasteFrontBackProcessor
 
     assert isinstance(dispatch(ProductType.BRUSH_HEAD), BrushHeadProcessor)
-    # P3 not yet implemented — registry returns None.
-    assert dispatch(ProductType.TOOTHPASTE_FRONTBACK) is None
-    assert dispatch(ProductType.HEIGHT_CHECK) is None
+    assert isinstance(dispatch(ProductType.TOOTHPASTE_FRONTBACK), ToothpasteFrontBackProcessor)
+    assert isinstance(dispatch(ProductType.HEIGHT_CHECK), HeightCheckProcessor)
+    # NONE has no processor (it's the "no algorithm selected" sentinel).
+    assert dispatch(ProductType.NONE) is None
 
 
 def test_codec_round_trip() -> None:
