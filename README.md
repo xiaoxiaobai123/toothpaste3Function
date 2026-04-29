@@ -34,24 +34,37 @@ See [`docs/PLC寄存器手册.md`](docs/PLC寄存器手册.md) (中文,工程师
 
 ## Quick start
 
+### Develop on x86
+
 ```bash
-# 1. Install dependencies (dev / x86 host)
 python3.11 -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -e .[dev,build]
-
-# 2. Configure
-cp config.example.json config.json
-# edit camera IPs / PLC IP / hardware ROI to match your setup
-
-# 3. Run on hardware
-python main.py
-
-# 4. Run display-only test (no camera / no PLC required)
-python tools/test_display.py --interval 0 --count 30 --profile
-
-# 5. Run unit tests (no hardware needed)
-pytest tests -v
+cp config.example.json config.json                       # edit IPs / ROI / plc_protocol
+python main.py                                           # needs MVS SDK on dev box
+python tools/simulate.py --product-type BRUSH_HEAD --image samples/brush.png   # no hardware
+pytest tests -v                                          # 70 tests, no hardware needed
 ```
+
+### Deploy to a NanoPi (offline factory machine, no internet)
+
+```bash
+# (a) On a PC with internet — grab the release:
+gh release download v0.2.0 --repo xiaoxiaobai123/toothpaste3Function
+# or download the .tar.gz from https://github.com/xiaoxiaobai123/toothpaste3Function/releases
+
+# (b) Copy onto a USB stick → carry to factory.
+
+# (c) On the NanoPi (no internet needed):
+tar -xzf toothpaste3Function-v0.2.0-aarch64.tar.gz -C ./release/
+cd release
+sudo ./deploy/upgrade.sh        # smart upgrade — preserves config.json,
+                                # roi_coordinates_*.json, license.key,
+                                # auto-rollback if startup fails
+
+tail -f /home/pi/my_app.log     # watch live
+```
+
+For first-time install (blank machine), use `./deploy/install.sh` instead.
 
 ## Project layout
 

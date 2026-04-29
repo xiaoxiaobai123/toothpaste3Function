@@ -8,17 +8,56 @@
 deploy/
 ├── main.service            # 视觉程序的 systemd 服务定义
 ├── image_updater.service   # C 显示程序的 systemd 服务定义
-├── install.sh              # 首次部署（或重装）脚本
-├── update-main.sh          # 日常发版（仅更新 main 二进制）
+├── install.sh              # 首次部署（裸机器 / 重装系统）
+├── upgrade.sh              # ★ 现场升级:保留客户配置 + 自动回滚 + 完全离线
+├── update-main.sh          # （旧）单纯换 binary,功能被 upgrade.sh 涵盖
 ├── uninstall.sh            # 卸载（回退到部署前）
 └── README.md               # 本文件
 ```
 
+## 🆕 推荐工作流(适用于现场没网络的客户)
+
+**办公室(有网络的电脑):**
+```bash
+# 下载 release tarball
+gh release download v0.2.0 --repo xiaoxiaobai123/toothpaste3Function
+# 或浏览器从 https://github.com/xiaoxiaobai123/toothpaste3Function/releases 下
+
+# 拷到 U 盘
+cp toothpaste3Function-v0.2.0-aarch64.tar.gz /media/usb/
+```
+
+**现场 NanoPi(无网络):**
+```bash
+# 1. U 盘插上 NanoPi,挂载
+sudo mount /dev/sdX1 /mnt/usb
+
+# 2. 拷贝 + 解压
+cp /mnt/usb/toothpaste3Function-v0.2.0-aarch64.tar.gz ~/
+cd ~ && tar -xzf toothpaste3Function-v0.2.0-aarch64.tar.gz -C ./release/
+cd release
+
+# 3. 一键升级
+sudo ./deploy/upgrade.sh
+```
+
+`upgrade.sh` 自动:
+
+✅ **保留** `/home/pi/config.json` ← 客户配置不动
+✅ **保留** `/home/pi/roi_coordinates_*.json` ← 工厂 ROI 不动
+✅ **保留** `/home/pi/license.key` ← 授权不动
+✅ **保留** `/home/pi/company_name.png` ← 客户改过的 logo 不动
+✅ 备份老 binary 到 `main.bak.<时间戳>`
+✅ 替换 main → 更新 systemd → 重启服务
+✅ **8 秒内启动失败自动回滚**到老 binary
+
 ---
 
-## 工作流
+## 📥 各种场景
 
-### 🆕 首次部署（或换机器、装系统）
+---
+
+### 🆕 首次部署（裸机器、还没装过任何东西）
 
 **在开发 VM 里**：
 ```bash

@@ -1,6 +1,8 @@
 {
-    "_comment": "Per-camera entries are camera1, camera2, ... — add or remove freely (1-N supported). 'enabled': false skips the camera at startup. Hardware ROI (width/height multiples of 4) cuts payload and capture time. Algorithm-side ROI in PLC D25-27/D45-47 is then relative to this smaller frame.",
+    "_comment_protocol": "PLC protocol selector. 'legacy_fronback' for existing toothpastefronback customers (uses original D0/D1/D2/D3/D4/D10-D11/D20-D23/D30-D36/D40 protocol — drop-in for sites with fixed PLC ladders). Omit or 'v2_unified' for new sites (per-camera ProductType in 18-word config blocks at D10..D27 / D30..D47).",
+    "plc_protocol": "v2_unified",
 
+    "_comment_cameras": "Per-camera entries are camera1, camera2, ... — add or remove freely (1-N supported). 'enabled': false skips the camera at startup. Hardware ROI (width/height multiples of 4) cuts payload and capture time. Algorithm-side ROI in PLC D25-27/D45-47 is then relative to this smaller frame.",
     "cameras": {
         "camera1": {
             "ip": "192.168.2.10",
