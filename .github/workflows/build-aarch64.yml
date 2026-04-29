@@ -42,8 +42,22 @@ jobs:
             BRANCH="${GITHUB_HEAD_REF}"
           fi
           COMMIT="$(git rev-parse --short HEAD)"
-          # Replace the placeholder in core/version.py
-          sed -i "s|^VERSION_INFO: str | None = None|VERSION_INFO: str | None = \"branch=${BRANCH} commit=${COMMIT}\"|" core/version.py
+          # Replace the placeholder in core/version.py.
+          # Use Python so we don't fight `|` in the type annotation `str | None`.
+          python - <<EOF
+          import pathlib, re
+          p = pathlib.Path("core/version.py")
+          text = p.read_text()
+          new = re.sub(
+              r"^VERSION_INFO: str \| None = None",
+              'VERSION_INFO: str | None = "branch=${BRANCH} commit=${COMMIT}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          assert new != text, "VERSION_INFO placeholder not found in core/version.py"
+          p.write_text(new)
+          EOF
           grep VERSION_INFO core/version.py
 
       - name: Build with PyInstaller
