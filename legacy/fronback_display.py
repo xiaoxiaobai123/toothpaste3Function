@@ -31,12 +31,19 @@ Both paths are configurable so tests can write into a tmp_path.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import cv2
 import numpy as np
 
-from processing.display_utils import convert_to_rgb565, save_rgb565_with_header
+from processing.display_utils import (
+    add_company_name,
+    convert_to_rgb565,
+    save_rgb565_with_header,
+)
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PNG_PATH = "/tmp/processed_image.png"
 DEFAULT_RGB565_PATH = "/home/pi/output_image.rgb565"
@@ -160,7 +167,21 @@ def compose_frontback(
     )
 
     separator = np.full((panel1.shape[0], _SEPARATOR_WIDTH, 3), _COLOR_BORDER, dtype=np.uint8)
-    return cv2.hconcat([panel1, separator, panel2])
+    composed = cv2.hconcat([panel1, separator, panel2])
+
+    # Stamp the company-name banner on top — same width-keyed cache as the
+    # v2 path uses (processing/display_utils._company_bar_cache), so the
+    # PNG is read from disk only on the first frame of each output width
+    # and reused thereafter (~0 ms overhead per subsequent frame).
+    #
+    # Tolerant: if company_name.png is missing or unreadable on a fresh dev
+    # machine, log a warning and ship the cam-only composition. Display
+    # never blocks on branding artefacts.
+    try:
+        return add_company_name(composed)
+    except Exception as e:
+        logger.warning(f"[Legacy] company_name overlay skipped: {e}")
+        return composed
 
 
 def render_frontback(

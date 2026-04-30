@@ -43,14 +43,18 @@ def test_frontback_writes_png_to_target_path(tmp_path: Path) -> None:
 
 
 def test_frontback_dimensions_match_original_layout(tmp_path: Path) -> None:
-    """Original layout:
+    """Layout:
         each panel resized to 0.4x → (1024*0.4, 1280*0.4) = (409, 512)
         + colour bar 25 high
         + 2px white border each side
         Then hconcat with 2px separator.
 
-    Total width = 2*(409 + 4) + 2 = 828
-    Total height = 512 + 25 + 4 = 541
+    Panel-only height: 512 + 25 + 4 = 541
+    Width:             2*(409 + 4) + 2 = 828
+
+    v0.3.7+ also vconcats the company-name banner on top — adds the
+    width-resized banner height. We compute that dynamically so the
+    test doesn't need updating when company_name.png is replaced.
     """
     out = tmp_path / "out.png"
     img1 = _solid(1024, 1280, (50, 50, 50))
@@ -63,7 +67,18 @@ def test_frontback_dimensions_match_original_layout(tmp_path: Path) -> None:
     h, w = rendered.shape[:2]
     # Allow ±4px slack for the integer-rounding in the resize step.
     assert abs(w - 828) <= 4, f"unexpected width {w}"
-    assert abs(h - 541) <= 4, f"unexpected height {h}"
+
+    # Expected height = panel layout + company-bar height (when present).
+    # If company_name.png is missing in the test env, compose still ships
+    # the cam-only composition — assert that case lands at 541.
+    expected_panel_h = 541
+    try:
+        from processing.display_utils import _get_company_bar
+        bar_h = _get_company_bar(w).shape[0]
+        expected_h = expected_panel_h + bar_h
+    except Exception:
+        expected_h = expected_panel_h
+    assert abs(h - expected_h) <= 4, f"unexpected height {h} (expected ~{expected_h})"
 
 
 def test_frontback_color_bar_swaps_with_winner(tmp_path: Path) -> None:
@@ -209,6 +224,26 @@ def test_compose_frontback_returns_array_without_writing(tmp_path: Path) -> None
     assert composed.shape[2] == 3
     # No files created in tmp_path.
     assert list(tmp_path.iterdir()) == []
+
+
+def test_compose_frontback_includes_company_bar_at_top() -> None:
+    """v0.3.7+ stamps the company-name banner on top of the cam composition
+    (mirrors the v2 path). Verify by comparing the top rows of the composed
+    image against the cached company bar at the same width."""
+    from processing.display_utils import _get_company_bar
+
+    img = _solid(640, 480, (50, 50, 50))
+    composed = compose_frontback(img, img, is_front=True)
+
+    bar = _get_company_bar(composed.shape[1])
+    bar_h = bar.shape[0]
+
+    # First bar_h rows of composed should be the company banner verbatim.
+    top_strip = composed[:bar_h]
+    assert top_strip.shape == bar.shape, (
+        f"top strip {top_strip.shape} != bar {bar.shape}"
+    )
+    assert np.array_equal(top_strip, bar), "top of composed image is not the company banner"
 
 
 # ----------------------------------------------------------------------
