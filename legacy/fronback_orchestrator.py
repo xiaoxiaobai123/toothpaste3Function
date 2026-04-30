@@ -51,6 +51,7 @@ from legacy.fronback_protocol import (
     TRIGGER_FIRE,
     TRIGGER_IDLE,
     TRIGGER_LOOP,
+    FrontbackSettings,
     LegacyFronbackPLC,
 )
 
@@ -203,21 +204,30 @@ class LegacyFronbackOrchestrator:
         self.logger.info("[Legacy] LOOP started")
         while True:
             try:
-                state = await asyncio.to_thread(self.plc.read_trigger_and_mode)
-                if state is None:
+                # One Modbus round-trip pulls D1-D11 (trigger, mode, frontback
+                # exposures) in a single block read — saves ~10-15 ms per
+                # iteration vs separate read_trigger_and_mode + read_frontback_settings.
+                block = await asyncio.to_thread(self.plc.read_loop_block)
+                if block is None:
                     await asyncio.sleep(POLL_INTERVAL_S)
                     continue
-                if state.trigger != TRIGGER_LOOP:
-                    self.logger.info(f"[Legacy] LOOP stopping (D1={state.trigger})")
+                if block.trigger != TRIGGER_LOOP:
+                    self.logger.info(f"[Legacy] LOOP stopping (D1={block.trigger})")
                     return
                 # Re-dispatch on each iteration so operator can flip D2 mid-loop.
-                if state.mode == MODE_FRONTBACK:
-                    await self._do_frontback()
-                elif state.mode == MODE_HEIGHT:
+                if block.mode == MODE_FRONTBACK:
+                    # Hand the already-read exposures to _do_frontback so it
+                    # doesn't redundantly re-read D10+D11.
+                    preread = FrontbackSettings(
+                        cam1_exposure=block.cam1_exposure,
+                        cam2_exposure=block.cam2_exposure,
+                    )
+                    await self._do_frontback(preread_settings=preread)
+                elif block.mode == MODE_HEIGHT:
                     await self._do_height()
                 else:
                     self.logger.warning(
-                        f"[Legacy] LOOP: unknown mode D2={state.mode}, skipping cycle"
+                        f"[Legacy] LOOP: unknown mode D2={block.mode}, skipping cycle"
                     )
             except asyncio.CancelledError:
                 raise
@@ -234,11 +244,17 @@ class LegacyFronbackOrchestrator:
 
     # ------------------------------------------------------------ frontback
 
-    async def _do_frontback(self) -> None:
-        settings = await asyncio.to_thread(self.plc.read_frontback_settings)
-        if settings is None:
-            self.logger.error("[Legacy] frontback: failed to read settings")
-            return
+    async def _do_frontback(self, preread_settings: FrontbackSettings | None = None) -> None:
+        # LOOP path passes settings already extracted from the bundled
+        # D1-D11 read so we skip a redundant Modbus round-trip. FIRE
+        # (single-shot) path leaves it None and we read here.
+        if preread_settings is not None:
+            settings = preread_settings
+        else:
+            settings = await asyncio.to_thread(self.plc.read_frontback_settings)
+            if settings is None:
+                self.logger.error("[Legacy] frontback: failed to read settings")
+                return
 
         # Apply exposures only when changed (camera ASICs snap values to
         # legal steps; setting the same value re-flushes the buffer for
@@ -254,10 +270,10 @@ class LegacyFronbackOrchestrator:
             asyncio.to_thread(self.cam.capture_image, 2),
         )
 
-        # Report camera status to PLC (parallel writes).
-        await asyncio.gather(
-            asyncio.to_thread(self.plc.write_camera_status, 1, img1 is not None),
-            asyncio.to_thread(self.plc.write_camera_status, 2, img2 is not None),
+        # Report camera status to PLC — single block-write of D3+D4 instead
+        # of two separate single-register writes (one round-trip vs two).
+        await asyncio.to_thread(
+            self.plc.write_camera_statuses, img1 is not None, img2 is not None
         )
 
         # Compute ROIs upfront so both the algorithm AND the display

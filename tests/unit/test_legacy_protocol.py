@@ -106,6 +106,55 @@ def test_read_height_settings_uses_seven_word_block_read(fake: FakePLCBase) -> N
     assert fake.reads == [(REG_HEIGHT_CAM2_EXPOSURE, 7)]
 
 
+def test_read_loop_block_uses_one_eleven_word_request(fake: FakePLCBase) -> None:
+    """LOOP path bundles D1-D11 into one Modbus read instead of two."""
+    # 11 words: D1 D2 D3 D4 D5 D6 D7 D8 D9 D10 D11
+    fake.scripted_reads = {(REG_CAPTURE_TRIGGER, 11): [11, 1, 0, 0, 0, 0, 0, 0, 0, 5000, 6000]}
+    legacy = LegacyFronbackPLC(plc_base=fake)
+
+    block = legacy.read_loop_block()
+    assert block is not None
+    assert block.trigger == 11
+    assert block.mode == 1
+    assert block.cam1_exposure == 5000
+    assert block.cam2_exposure == 6000
+    # Single Modbus round-trip, not two.
+    assert fake.reads == [(REG_CAPTURE_TRIGGER, 11)]
+
+
+def test_read_loop_block_returns_none_on_failure(fake: FakePLCBase) -> None:
+    """Mirrors the other read_* helpers — None on transient PLC failure."""
+    legacy = LegacyFronbackPLC(plc_base=fake)
+    assert legacy.read_loop_block() is None
+
+
+def test_read_loop_block_extracts_correct_word_offsets(fake: FakePLCBase) -> None:
+    """Word indices: trigger=0, mode=1, cam1_exp=9, cam2_exp=10. A wrong
+    offset would silently swap exposures with garbage like D5/D6."""
+    fake.scripted_reads = {
+        (REG_CAPTURE_TRIGGER, 11): [
+            10,    # D1 trigger
+            0,     # D2 mode
+            99,    # D3 (cam1 status — our own write echoed back)
+            99,    # D4
+            99,    # D5
+            99,    # D6
+            99,    # D7
+            99,    # D8
+            99,    # D9
+            7777,  # D10 cam1 exposure
+            8888,  # D11 cam2 exposure
+        ]
+    }
+    legacy = LegacyFronbackPLC(plc_base=fake)
+    block = legacy.read_loop_block()
+    assert block is not None
+    assert block.trigger == 10
+    assert block.mode == 0
+    assert block.cam1_exposure == 7777
+    assert block.cam2_exposure == 8888
+
+
 def test_does_not_read_d12_d13_unrecognized_threshold(fake: FakePLCBase) -> None:
     """The original program's dead D12/D13 reads are dropped here.
 
@@ -156,6 +205,27 @@ def test_write_camera_status_ignores_unsupported_camera(fake: FakePLCBase) -> No
     legacy = LegacyFronbackPLC(plc_base=fake)
     legacy.write_camera_status(7, online=True)  # not 1 or 2
     assert fake.writes_single == []
+
+
+def test_write_camera_statuses_uses_block_write_at_d3(fake: FakePLCBase) -> None:
+    """LOOP path writes D3+D4 in one Modbus block instead of two singles."""
+    legacy = LegacyFronbackPLC(plc_base=fake)
+    legacy.write_camera_statuses(cam1_online=True, cam2_online=False)
+    assert fake.writes_block == [(REG_CAM1_STATUS, [1, 0])]
+    # And nothing leaked to single writes.
+    assert fake.writes_single == []
+
+
+def test_write_camera_statuses_both_offline(fake: FakePLCBase) -> None:
+    legacy = LegacyFronbackPLC(plc_base=fake)
+    legacy.write_camera_statuses(cam1_online=False, cam2_online=False)
+    assert fake.writes_block == [(REG_CAM1_STATUS, [0, 0])]
+
+
+def test_write_camera_statuses_both_online(fake: FakePLCBase) -> None:
+    legacy = LegacyFronbackPLC(plc_base=fake)
+    legacy.write_camera_statuses(cam1_online=True, cam2_online=True)
+    assert fake.writes_block == [(REG_CAM1_STATUS, [1, 1])]
 
 
 def test_write_edge_counts_uses_block_write_at_d20(fake: FakePLCBase) -> None:

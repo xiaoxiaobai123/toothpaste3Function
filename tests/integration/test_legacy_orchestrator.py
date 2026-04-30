@@ -159,8 +159,16 @@ async def test_frontback_one_cycle_writes_d0_and_edge_counts(
     addrs_written = [addr for addr, _ in plc.writes]
     assert REG_RECOGNITION_RESULT in addrs_written, "D0 not written"
     assert REG_EDGE1_LOW in addrs_written, "D20-D23 edge counts not written"
-    assert REG_CAM1_STATUS in addrs_written, "D3 cam1 status not written"
-    assert REG_CAM2_STATUS in addrs_written, "D4 cam2 status not written"
+    # D3+D4 are written together as one block (write_camera_statuses), so
+    # plc.writes contains a single (3, [cam1, cam2]) entry — no separate
+    # entry for D4. Final state of both regs is what we actually verify.
+    assert plc.regs[REG_CAM1_STATUS] == 1, "D3 cam1 status not set"
+    assert plc.regs[REG_CAM2_STATUS] == 1, "D4 cam2 status not set"
+    cam_status_writes = [
+        (addr, vals) for addr, vals in plc.writes
+        if addr == REG_CAM1_STATUS and len(vals) == 2
+    ]
+    assert cam_status_writes, "block write of D3+D4 cam status not produced"
 
     # cam1 has many more edges, expect FRONT (D0=1).
     d0_writes = [v[0] for addr, v in plc.writes if addr == REG_RECOGNITION_RESULT]
@@ -335,9 +343,16 @@ async def test_frontback_renders_offline_placeholder_when_cam1_missing(
 
     addrs_written = [addr for addr, _ in plc.writes]
     # Camera-status writes are still made so the PLC knows which camera
-    # dropped (matches every other frontback cycle).
-    assert REG_CAM1_STATUS in addrs_written
-    assert REG_CAM2_STATUS in addrs_written
+    # dropped (matches every other frontback cycle). D3+D4 are now block-
+    # written together — verify the regs ended up reflecting the offline
+    # cam (D3=0) and online cam (D4=1).
+    assert plc.regs[REG_CAM1_STATUS] == 0, "cam1 should be marked offline"
+    assert plc.regs[REG_CAM2_STATUS] == 1, "cam2 should be marked online"
+    cam_status_writes = [
+        (addr, vals) for addr, vals in plc.writes
+        if addr == REG_CAM1_STATUS and len(vals) == 2
+    ]
+    assert cam_status_writes, "block write of D3+D4 cam status not produced"
     # But D0 (recognition result) and D20-D23 (edge counts) MUST NOT be
     # written — the algorithm did not run on a half-blind frame, so any
     # value here would be a lie to the PLC.

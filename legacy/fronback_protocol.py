@@ -114,6 +114,23 @@ class FrontbackSettings:
 
 
 @dataclass(frozen=True)
+class LoopBlock:
+    """Single-shot D1-D11 read used by the LOOP hot path.
+
+    Bundles trigger + mode + frontback exposures so one Modbus round-trip
+    replaces the two separate `read_trigger_and_mode` + `read_frontback_settings`
+    calls. D3-D9 are read as part of the contiguous block and discarded —
+    they're values we write (cam status / unused), so reading them just
+    echoes our own state back.
+    """
+
+    trigger: int
+    mode: int
+    cam1_exposure: int
+    cam2_exposure: int
+
+
+@dataclass(frozen=True)
 class HeightSettings:
     """Decoded D30..D36 — height mode parameters.
 
@@ -172,6 +189,26 @@ class LegacyFronbackPLC:
             return None
         return FrontbackSettings(cam1_exposure=words[0], cam2_exposure=words[1])
 
+    def read_loop_block(self) -> LoopBlock | None:
+        """Block-read D1-D11 in one Modbus request: trigger, mode, frontback
+        exposures bundled together. Saves a round-trip vs separate
+        `read_trigger_and_mode` + `read_frontback_settings` calls inside the
+        LOOP, where the per-iteration savings compound.
+
+        D3-D9 are read as part of the contiguous span (Modbus reads must be
+        contiguous) but discarded — they're our own writes echoed back.
+        """
+        with self._lock:
+            words = self.plc.read_status(REG_CAPTURE_TRIGGER, count=11)
+        if not isinstance(words, list) or len(words) < 11:
+            return None
+        return LoopBlock(
+            trigger=words[0],          # D1
+            mode=words[1],             # D2
+            cam1_exposure=words[9],    # D10
+            cam2_exposure=words[10],   # D11
+        )
+
     def read_height_settings(self) -> HeightSettings | None:
         """Block-read D30..D36 (7 registers in one request)."""
         with self._lock:
@@ -205,6 +242,17 @@ class LegacyFronbackPLC:
         reg = REG_CAM1_STATUS if camera_num == 1 else REG_CAM2_STATUS
         with self._lock:
             self.plc.write_status(reg, 1 if online else 0)
+
+    def write_camera_statuses(self, cam1_online: bool, cam2_online: bool) -> None:
+        """Block-write D3+D4 in one Modbus request — half the round-trips of
+        two separate `write_camera_status` calls. LOOP path uses this; the
+        single-cam height path keeps `write_camera_status` for cam2 alone.
+        """
+        with self._lock:
+            self.plc.write_multiple_registers(
+                REG_CAM1_STATUS,
+                [1 if cam1_online else 0, 1 if cam2_online else 0],
+            )
 
     def write_edge_counts(self, edge1: int, edge2: int) -> None:
         """Block-write D20-D23 (2x uint32, low word first per original)."""
