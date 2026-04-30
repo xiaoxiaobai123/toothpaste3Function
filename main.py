@@ -52,7 +52,14 @@ async def _main() -> None:
 
         plc = LegacyFronbackPLC(config.get_plc_ip())
         roi_provider = make_file_roi_provider(camera_manager, base_dir=".", logger=logger)
-        orchestrator = LegacyFronbackOrchestrator(plc, camera_manager, roi_provider, logger)
+        # png_path=None: production deployments display via image_updater
+        # (which reads the rgb565 sink). PNG is a leftover sink for sites
+        # using feh/fbi instead — none of the live customers do, so writing
+        # it every cycle just burns ~10-30 ms encoding to a file no one
+        # reads. Tests pass an explicit png_path when they need it.
+        orchestrator = LegacyFronbackOrchestrator(
+            plc, camera_manager, roi_provider, logger, png_path=None
+        )
         await orchestrator.run()
     else:
         from core.task_manager import TaskManager
