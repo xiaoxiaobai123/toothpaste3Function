@@ -253,3 +253,292 @@ def test_v2_no_op_when_already_v2(monkeypatch: pytest.MonkeyPatch) -> None:
     assert rc == 0
     # Still single-cam, unchanged.
     assert cfg["cameras"]["camera2"]["enabled"] is False
+
+
+# --------------------------------------------------------------------------- #
+# Hardware ROI: pure coordinate math.
+# --------------------------------------------------------------------------- #
+def test_translate_algo_roi_basic_offset_subtraction() -> None:
+    """ROI {290..990, 150..650} on a 1280x800 frame, hw ROI offset (240, 100)
+    width/height (800, 600) -> {50..750, 50..550}."""
+    out = _mod.translate_algo_roi(
+        {"x1": 290, "y1": 150, "x2": 990, "y2": 650},
+        offset_x=240, offset_y=100, width=800, height=600,
+    )
+    assert out == {"x1": 50, "y1": 50, "x2": 750, "y2": 550}
+
+
+def test_translate_algo_roi_clamps_negative_to_zero() -> None:
+    """ROI start in the cropped-out region (negative after subtract) -> 0."""
+    out = _mod.translate_algo_roi(
+        {"x1": 100, "y1": 100, "x2": 700, "y2": 500},
+        offset_x=240, offset_y=200, width=800, height=600,
+    )
+    # x1: 100-240 = -140 -> clamped to 0
+    # y1: 100-200 = -100 -> clamped to 0
+    assert out["x1"] == 0
+    assert out["y1"] == 0
+    # x2/y2 valid
+    assert out["x2"] == 460
+    assert out["y2"] == 300
+
+
+def test_translate_algo_roi_clamps_to_width_height() -> None:
+    """ROI extending past the cropped region -> clamped to width/height."""
+    out = _mod.translate_algo_roi(
+        {"x1": 300, "y1": 200, "x2": 9999, "y2": 9999},
+        offset_x=240, offset_y=100, width=800, height=600,
+    )
+    assert out["x2"] == 800
+    assert out["y2"] == 600
+
+
+def test_translate_algo_roi_zero_offset_is_identity_under_clamp() -> None:
+    """offset=0 keeps coords; only clamp may apply."""
+    out = _mod.translate_algo_roi(
+        {"x1": 100, "y1": 50, "x2": 700, "y2": 500},
+        offset_x=0, offset_y=0, width=800, height=600,
+    )
+    assert out == {"x1": 100, "y1": 50, "x2": 700, "y2": 500}
+
+
+# --------------------------------------------------------------------------- #
+# Hardware ROI: cfg dict mutation.
+# --------------------------------------------------------------------------- #
+def test_apply_hardware_roi_writes_full_dict() -> None:
+    cfg = _two_cam_cfg()
+    line = _mod.apply_hardware_roi(
+        cfg, 1, {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100}
+    )
+    assert cfg["cameras"]["camera1"]["roi"] == {
+        "width": 800, "height": 600, "offset_x": 240, "offset_y": 100,
+    }
+    assert "(none)" in line  # was no roi before
+
+
+def test_apply_hardware_roi_replaces_existing() -> None:
+    cfg = _two_cam_cfg()
+    cfg["cameras"]["camera1"]["roi"] = {
+        "width": 1024, "height": 768, "offset_x": 0, "offset_y": 0
+    }
+    line = _mod.apply_hardware_roi(
+        cfg, 1, {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100}
+    )
+    assert cfg["cameras"]["camera1"]["roi"]["width"] == 800
+    assert "1024" in line and "800" in line
+
+
+def test_apply_hardware_roi_unconfigured_camera_raises() -> None:
+    cfg = {"cameras": {"camera1": {"ip": "1.2.3.4"}}}
+    with pytest.raises(KeyError, match="camera2"):
+        _mod.apply_hardware_roi(cfg, 2, {"width": 800, "height": 600})
+
+
+def test_apply_hardware_roi_rejects_non_4_aligned_width() -> None:
+    cfg = _two_cam_cfg()
+    with pytest.raises(ValueError, match="width=801"):
+        _mod.apply_hardware_roi(cfg, 1, {"width": 801, "height": 600})
+
+
+def test_apply_hardware_roi_rejects_non_4_aligned_offset() -> None:
+    cfg = _two_cam_cfg()
+    with pytest.raises(ValueError, match="offset_x=241"):
+        _mod.apply_hardware_roi(
+            cfg, 1, {"width": 800, "height": 600, "offset_x": 241, "offset_y": 0}
+        )
+
+
+def test_apply_hardware_roi_rejects_zero_dimensions() -> None:
+    cfg = _two_cam_cfg()
+    with pytest.raises(ValueError, match="positive"):
+        _mod.apply_hardware_roi(cfg, 1, {"width": 0, "height": 600})
+
+
+def test_reset_hardware_roi_removes_field() -> None:
+    cfg = _two_cam_cfg()
+    cfg["cameras"]["camera1"]["roi"] = {
+        "width": 800, "height": 600, "offset_x": 0, "offset_y": 0
+    }
+    line = _mod.reset_hardware_roi(cfg, 1)
+    assert line is not None
+    assert "roi" not in cfg["cameras"]["camera1"]
+
+
+def test_reset_hardware_roi_returns_none_when_already_absent() -> None:
+    cfg = _two_cam_cfg()
+    assert _mod.reset_hardware_roi(cfg, 1) is None
+
+
+# --------------------------------------------------------------------------- #
+# Algorithm ROI file IO + roundtrip.
+# --------------------------------------------------------------------------- #
+def _seed_algo_roi(base_dir: Path, ip: str, roi: dict[str, int]) -> Path:
+    path = _mod.algo_roi_path(base_dir, ip)
+    path.write_text(__import__("json").dumps(roi), encoding="utf-8")
+    return path
+
+
+def test_apply_algo_roi_translation_creates_snapshot_on_first_call(
+    tmp_path: Path,
+) -> None:
+    ip = "192.168.2.10"
+    full_frame_roi = {"x1": 290, "y1": 150, "x2": 990, "y2": 650}
+    _seed_algo_roi(tmp_path, ip, full_frame_roi)
+
+    hw_roi = {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100}
+    _mod.apply_algo_roi_translation(tmp_path, ip, hw_roi)
+
+    snap_path = _mod.algo_roi_snapshot_path(tmp_path, ip)
+    assert snap_path.is_file()
+    snap = __import__("json").loads(snap_path.read_text(encoding="utf-8"))
+    assert snap == full_frame_roi
+
+    new = __import__("json").loads(_mod.algo_roi_path(tmp_path, ip).read_text(encoding="utf-8"))
+    assert new == {"x1": 50, "y1": 50, "x2": 750, "y2": 550}
+
+
+def test_apply_algo_roi_translation_reuses_snapshot_on_second_call(
+    tmp_path: Path,
+) -> None:
+    """Second apply with different hw_roi should translate from the ORIGINAL
+    full-frame coords, not from the already-translated coords (no offset
+    stacking)."""
+    ip = "192.168.2.10"
+    _seed_algo_roi(tmp_path, ip, {"x1": 290, "y1": 150, "x2": 990, "y2": 650})
+
+    # First apply.
+    _mod.apply_algo_roi_translation(
+        tmp_path, ip, {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100}
+    )
+    # Second apply with bigger crop (different offset).
+    _mod.apply_algo_roi_translation(
+        tmp_path, ip, {"width": 1024, "height": 768, "offset_x": 100, "offset_y": 50}
+    )
+
+    new = __import__("json").loads(_mod.algo_roi_path(tmp_path, ip).read_text(encoding="utf-8"))
+    # Computed from original (290, 150, 990, 650) - (100, 50)
+    assert new == {"x1": 190, "y1": 100, "x2": 890, "y2": 600}
+
+
+def test_apply_algo_roi_translation_missing_file_does_not_raise(
+    tmp_path: Path,
+) -> None:
+    """Single-camera or fresh deployment with no ROI file -> graceful skip."""
+    ip = "10.0.0.1"
+    lines = _mod.apply_algo_roi_translation(
+        tmp_path, ip, {"width": 800, "height": 600, "offset_x": 0, "offset_y": 0}
+    )
+    assert any("nothing to translate" in line for line in lines)
+    # Did not create any files.
+    assert not _mod.algo_roi_path(tmp_path, ip).exists()
+    assert not _mod.algo_roi_snapshot_path(tmp_path, ip).exists()
+
+
+def test_reset_algo_roi_translation_restores_from_snapshot(tmp_path: Path) -> None:
+    ip = "192.168.2.10"
+    full_frame_roi = {"x1": 290, "y1": 150, "x2": 990, "y2": 650}
+    _seed_algo_roi(tmp_path, ip, full_frame_roi)
+
+    # Apply, then reset.
+    _mod.apply_algo_roi_translation(
+        tmp_path, ip, {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100}
+    )
+    _mod.reset_algo_roi_translation(tmp_path, ip)
+
+    restored = __import__("json").loads(
+        _mod.algo_roi_path(tmp_path, ip).read_text(encoding="utf-8")
+    )
+    assert restored == full_frame_roi
+    # Snapshot deleted.
+    assert not _mod.algo_roi_snapshot_path(tmp_path, ip).exists()
+
+
+def test_reset_algo_roi_translation_no_snapshot_is_noop(tmp_path: Path) -> None:
+    ip = "192.168.2.10"
+    full_frame_roi = {"x1": 100, "y1": 100, "x2": 500, "y2": 500}
+    _seed_algo_roi(tmp_path, ip, full_frame_roi)
+
+    lines = _mod.reset_algo_roi_translation(tmp_path, ip)
+
+    assert any("no .full_frame snapshot" in line for line in lines)
+    untouched = __import__("json").loads(
+        _mod.algo_roi_path(tmp_path, ip).read_text(encoding="utf-8")
+    )
+    assert untouched == full_frame_roi
+
+
+# --------------------------------------------------------------------------- #
+# _do_roi: integration of cfg mutation + filesystem.
+# --------------------------------------------------------------------------- #
+def _stub_roi_io(monkeypatch: pytest.MonkeyPatch, base_dir: Path) -> None:
+    """Stub config / restart side-effects, redirect ROI file dir to tmp_path."""
+    monkeypatch.setattr(_mod, "_backup_config", lambda: None)
+    monkeypatch.setattr(_mod, "write_config_atomic", lambda _cfg: None)
+    monkeypatch.setattr(_mod, "restart_service", lambda: 0)
+    monkeypatch.setattr(_mod, "ALGO_ROI_DIR", base_dir)
+
+
+def test_do_roi_apply_both_cameras_writes_two_roi_dicts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _stub_roi_io(monkeypatch, tmp_path)
+    cfg = _two_cam_cfg()
+    _seed_algo_roi(tmp_path, "192.168.2.10",
+                   {"x1": 290, "y1": 150, "x2": 990, "y2": 650})
+    _seed_algo_roi(tmp_path, "192.168.3.10",
+                   {"x1": 290, "y1": 150, "x2": 990, "y2": 650})
+
+    rc = _mod._do_roi(
+        cfg, "both",
+        {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100},
+        reset=False, translate_algo=True, no_restart=True,
+    )
+
+    assert rc == 0
+    assert cfg["cameras"]["camera1"]["roi"]["width"] == 800
+    assert cfg["cameras"]["camera2"]["roi"]["width"] == 800
+
+
+def test_do_roi_reset_removes_roi_and_restores_algo(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _stub_roi_io(monkeypatch, tmp_path)
+    cfg = _two_cam_cfg()
+    full = {"x1": 290, "y1": 150, "x2": 990, "y2": 650}
+    _seed_algo_roi(tmp_path, "192.168.2.10", full)
+
+    # First apply, then reset.
+    _mod._do_roi(
+        cfg, "cam1",
+        {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100},
+        reset=False, translate_algo=True, no_restart=True,
+    )
+    _mod._do_roi(
+        cfg, "cam1", None,
+        reset=True, translate_algo=True, no_restart=True,
+    )
+
+    assert "roi" not in cfg["cameras"]["camera1"]
+    restored = __import__("json").loads(
+        _mod.algo_roi_path(tmp_path, "192.168.2.10").read_text(encoding="utf-8")
+    )
+    assert restored == full
+
+
+def test_do_roi_skips_unconfigured_camera(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """If config only has camera1, `roi both --width ...` should not crash —
+    just apply to camera1 and skip camera2 with a note."""
+    _stub_roi_io(monkeypatch, tmp_path)
+    cfg = {"cameras": {"camera1": {"ip": "1.2.3.4", "enabled": True}}}
+
+    rc = _mod._do_roi(
+        cfg, "both",
+        {"width": 800, "height": 600, "offset_x": 0, "offset_y": 0},
+        reset=False, translate_algo=False, no_restart=True,
+    )
+
+    assert rc == 0
+    assert cfg["cameras"]["camera1"]["roi"]["width"] == 800
+    assert "camera2" not in cfg["cameras"]
