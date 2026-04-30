@@ -47,6 +47,7 @@ from legacy.fronback_protocol import (
     TRIGGER_DONE,
     TRIGGER_FIRE,
     TRIGGER_IDLE,
+    TRIGGER_LOOP,
     LegacyFronbackPLC,
 )
 
@@ -152,6 +153,8 @@ class LegacyFronbackOrchestrator:
                     continue
                 if state.trigger == TRIGGER_FIRE:
                     await self._handle_capture(state.mode)
+                elif state.trigger == TRIGGER_LOOP:
+                    await self._do_loop()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -173,6 +176,52 @@ class LegacyFronbackOrchestrator:
 
         # Mark done.
         await asyncio.to_thread(self.plc.write_trigger, TRIGGER_DONE)
+
+    async def _do_loop(self) -> None:
+        """Continuous-capture loop, runs until PLC writes D1 != TRIGGER_LOOP.
+
+        Mirrors the START_LOOP behaviour from the head/display source repos
+        and v2's TaskManager.process_continuous_capture: each iteration
+        re-reads D1+D2, dispatches by mode, then immediately starts the
+        next iteration. Operator can flip D2 mid-loop to switch between
+        frontback and height without stopping.
+
+        Unlike _handle_capture, this does NOT touch D1 itself. The PLC
+        owns D1 throughout the loop — it sets 11 to start, anything else
+        (typically 0 IDLE) to stop. If we wrote IDLE/DONE inside the loop
+        we'd either flip ourselves out prematurely or signal "single
+        capture complete" semantics that don't apply here.
+
+        Result registers (D0, D20-D23, D40) are still written every cycle
+        by _do_frontback / _do_height — same as in single-fire mode, just
+        much more frequently. Customer's PLC ladder must be ready for that
+        write rate (typically <= 1 Hz given capture+algorithm cycle time).
+        """
+        self.logger.info("[Legacy] LOOP started")
+        while True:
+            try:
+                state = await asyncio.to_thread(self.plc.read_trigger_and_mode)
+                if state is None:
+                    await asyncio.sleep(POLL_INTERVAL_S)
+                    continue
+                if state.trigger != TRIGGER_LOOP:
+                    self.logger.info(f"[Legacy] LOOP stopping (D1={state.trigger})")
+                    return
+                # Re-dispatch on each iteration so operator can flip D2 mid-loop.
+                if state.mode == MODE_FRONTBACK:
+                    await self._do_frontback()
+                elif state.mode == MODE_HEIGHT:
+                    await self._do_height()
+                else:
+                    self.logger.warning(
+                        f"[Legacy] LOOP: unknown mode D2={state.mode}, skipping cycle"
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                self.throttled.error(f"[Legacy] LOOP iteration exception: {e}")
+                await asyncio.sleep(1.0)
+            await asyncio.sleep(POLL_INTERVAL_S)
 
     # ------------------------------------------------------------ frontback
 

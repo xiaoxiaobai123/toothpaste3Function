@@ -58,6 +58,7 @@ D35_HEIGHT_COMP = 35
 D40_HEIGHT_RESULT = 40
 
 LEGACY_TRIGGER_FIRE, LEGACY_TRIGGER_IDLE, LEGACY_TRIGGER_DONE = 10, 0, 1
+LEGACY_TRIGGER_LOOP = 11   # extension shipped in legacy v0.3.6+
 LEGACY_MODE_HEIGHT, LEGACY_MODE_FRONTBACK = 0, 1
 
 
@@ -133,6 +134,17 @@ class PLC:
         with self._lock:
             self.client.write_single_register(D2_MODE, mode)
             self.client.write_single_register(D1_TRIGGER, LEGACY_TRIGGER_FIRE)
+
+    def legacy_fire_loop(self, mode: int) -> None:
+        """Start continuous capture in legacy mode (binary v0.3.6+ required)."""
+        with self._lock:
+            self.client.write_single_register(D2_MODE, mode)
+            self.client.write_single_register(D1_TRIGGER, LEGACY_TRIGGER_LOOP)
+
+    def legacy_stop_loop(self) -> None:
+        """Halt a running legacy LOOP by writing IDLE (0) to D1."""
+        with self._lock:
+            self.client.write_single_register(D1_TRIGGER, LEGACY_TRIGGER_IDLE)
 
     # ---------------- v2_unified ----------------
 
@@ -339,23 +351,53 @@ class PLCTesterGUI:
         self._build_v2_tab(v2_frame)
 
     def _build_legacy_tab(self, parent: ttk.Frame) -> None:
-        # Trigger buttons
-        trig = ttk.LabelFrame(parent, text="Triggers (writes only D2 + D1)", padding=6)
-        trig.pack(fill="x", padx=4, pady=4)
+        # Single-trigger buttons (D1=10)
+        single = ttk.LabelFrame(parent, text="Single trigger (writes D2 + D1=10)", padding=6)
+        single.pack(fill="x", padx=4, pady=2)
 
         self.legacy_fb_btn = ttk.Button(
-            trig, text="FIRE FRONTBACK  (D2=1, dual-cam)",
+            single, text="FIRE FRONTBACK  (D2=1, dual-cam)",
             command=lambda: self._fire_legacy(LEGACY_MODE_FRONTBACK, "FRONTBACK / 正反"),
-            width=36,
+            width=34,
         )
         self.legacy_fb_btn.pack(side="left", padx=4, pady=4)
 
         self.legacy_height_btn = ttk.Button(
-            trig, text="FIRE HEIGHT  (D2=0, cam2 only)",
+            single, text="FIRE HEIGHT  (D2=0, cam2 only)",
             command=lambda: self._fire_legacy(LEGACY_MODE_HEIGHT, "HEIGHT / 高度"),
-            width=36,
+            width=34,
         )
         self.legacy_height_btn.pack(side="left", padx=4, pady=4)
+
+        # Continuous-loop buttons (D1=11; STOP writes D1=0). Requires binary
+        # v0.3.6+ — older legacy binaries silently ignore D1=11.
+        loop = ttk.LabelFrame(
+            parent,
+            text="Continuous loop (writes D2 + D1=11; STOP writes D1=0)  -  binary v0.3.6+",
+            padding=6,
+        )
+        loop.pack(fill="x", padx=4, pady=2)
+
+        self.legacy_loop_fb_btn = ttk.Button(
+            loop, text="LOOP FRONTBACK  (D2=1, D1=11)",
+            command=lambda: self._loop_legacy(LEGACY_MODE_FRONTBACK, "LOOP FRONTBACK"),
+            width=28,
+        )
+        self.legacy_loop_fb_btn.pack(side="left", padx=4, pady=4)
+
+        self.legacy_loop_height_btn = ttk.Button(
+            loop, text="LOOP HEIGHT  (D2=0, D1=11)",
+            command=lambda: self._loop_legacy(LEGACY_MODE_HEIGHT, "LOOP HEIGHT"),
+            width=28,
+        )
+        self.legacy_loop_height_btn.pack(side="left", padx=4, pady=4)
+
+        self.legacy_stop_btn = ttk.Button(
+            loop, text="STOP LOOP  (D1=0)",
+            command=self._stop_legacy_loop,
+            width=20,
+        )
+        self.legacy_stop_btn.pack(side="left", padx=4, pady=4)
 
         # Status panel
         status = ttk.LabelFrame(parent, text="Live PLC State (legacy)", padding=6)
@@ -536,6 +578,35 @@ class PLCTesterGUI:
         finally:
             self.queue.put(("legacy_buttons_on", None))
             self.queue.put(("refresh", None))
+
+    def _loop_legacy(self, mode: int, label: str) -> None:
+        """Start a legacy LOOP — write D2 + D1=11. No handshake polling
+        because the loop runs until the user clicks STOP."""
+        if self.plc is None:
+            messagebox.showwarning("Not connected", "Connect to the PLC first.")
+            return
+        self._log(f"[legacy LOOP] start {label}: D2={mode}, D1=11")
+        try:
+            self.plc.legacy_fire_loop(mode)
+        except Exception as exc:
+            self._log(f"  [legacy LOOP] error: {exc}")
+            return
+        self._log("  -> orchestrator now running LOOP. Click STOP LOOP to halt. "
+                  "(Requires binary v0.3.6+; older builds silently ignore D1=11.)")
+        self._refresh_status()
+
+    def _stop_legacy_loop(self) -> None:
+        """Halt a running legacy LOOP by writing D1=0 (TRIGGER_IDLE)."""
+        if self.plc is None:
+            messagebox.showwarning("Not connected", "Connect to the PLC first.")
+            return
+        self._log("[legacy STOP] D1=0 (IDLE)")
+        try:
+            self.plc.legacy_stop_loop()
+        except Exception as exc:
+            self._log(f"  [legacy STOP] error: {exc}")
+            return
+        self._refresh_status()
 
     # ---------------- v2 tab actions ----------------
 

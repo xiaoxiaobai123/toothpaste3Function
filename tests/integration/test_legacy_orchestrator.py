@@ -34,6 +34,7 @@ from legacy.fronback_protocol import (
     TRIGGER_DONE,
     TRIGGER_FIRE,
     TRIGGER_IDLE,
+    TRIGGER_LOOP,
     LegacyFronbackPLC,
 )
 
@@ -350,6 +351,137 @@ async def test_frontback_renders_offline_placeholder_when_cam1_missing(
     d1_writes = [v[0] for addr, v in plc.writes if addr == REG_CAPTURE_TRIGGER]
     assert TRIGGER_IDLE in d1_writes
     assert TRIGGER_DONE in d1_writes
+
+
+@pytest.mark.asyncio
+async def test_loop_runs_multiple_cycles_until_d1_changes(
+    cam_dir: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """LOOP mode (D1=11) keeps capturing until PLC writes anything else."""
+    d1, d2 = cam_dir
+
+    plc = ScriptedPLC()
+    plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_LOOP
+    plc.regs[2] = 1  # MODE_FRONTBACK
+    plc.regs[REG_CAM1_EXPOSURE] = 5000
+    plc.regs[REG_CAM1_EXPOSURE + 1] = 5000
+
+    legacy_plc = LegacyFronbackPLC(plc_base=plc)
+    cam = MockCameraManager({1: d1, 2: d2})
+    roi = make_file_roi_provider(cam, base_dir=tmp_path, logger=_logger())
+
+    png_path = tmp_path / "processed_image.png"
+    rgb565_path = tmp_path / "output_image.rgb565"
+    orchestrator = LegacyFronbackOrchestrator(
+        legacy_plc, cam, roi, _logger(), png_path=png_path, rgb565_path=rgb565_path
+    )
+    task = asyncio.create_task(orchestrator.run())
+
+    # Let it churn for a bit so several capture cycles happen.
+    await asyncio.sleep(0.5)
+    plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_IDLE  # operator stops the loop
+    await asyncio.sleep(0.2)  # one POLL_INTERVAL for the loop to notice
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    # Multiple D0 writes during the loop (≥2 captures completed).
+    d0_writes = [v[0] for addr, v in plc.writes if addr == REG_RECOGNITION_RESULT]
+    assert len(d0_writes) >= 2, (
+        f"expected multiple D0 writes during LOOP, got {len(d0_writes)}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_loop_does_not_write_d1_handshake(
+    cam_dir: tuple[Path, Path], tmp_path: Path
+) -> None:
+    """In LOOP mode the PLC owns D1 — orchestrator must not write IDLE/DONE
+    to it during the loop (would prematurely flip out of LOOP or signal
+    single-capture-complete semantics that don't apply)."""
+    d1, d2 = cam_dir
+
+    plc = ScriptedPLC()
+    plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_LOOP
+    plc.regs[2] = 1  # MODE_FRONTBACK
+    plc.regs[REG_CAM1_EXPOSURE] = 5000
+    plc.regs[REG_CAM1_EXPOSURE + 1] = 5000
+
+    legacy_plc = LegacyFronbackPLC(plc_base=plc)
+    cam = MockCameraManager({1: d1, 2: d2})
+    roi = make_file_roi_provider(cam, base_dir=tmp_path, logger=_logger())
+
+    orchestrator = LegacyFronbackOrchestrator(
+        legacy_plc, cam, roi, _logger(),
+        png_path=tmp_path / "p.png", rgb565_path=tmp_path / "p.rgb565",
+    )
+    task = asyncio.create_task(orchestrator.run())
+
+    await asyncio.sleep(0.4)
+    plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_IDLE
+    await asyncio.sleep(0.2)
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    # No writes from the orchestrator to D1 during the loop. (Tests set the
+    # PLC reg directly via plc.regs[…], so plc.writes only captures what the
+    # orchestrator sent via the PLCBase.write_status path.)
+    d1_writes = [(addr, v) for addr, v in plc.writes if addr == REG_CAPTURE_TRIGGER]
+    assert d1_writes == [], (
+        f"orchestrator wrote D1 during LOOP — should not happen: {d1_writes}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_loop_honors_mid_loop_mode_change(
+    cam_dir: tuple[Path, Path], height_dir: Path, tmp_path: Path
+) -> None:
+    """Operator can flip D2 mid-loop to switch frontback↔height without
+    restarting. The next iteration picks up the new mode."""
+    d1, d2 = cam_dir
+
+    plc = ScriptedPLC()
+    plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_LOOP
+    plc.regs[2] = 1  # start in MODE_FRONTBACK
+    plc.regs[REG_CAM1_EXPOSURE] = 5000
+    plc.regs[REG_CAM1_EXPOSURE + 1] = 5000
+    plc.regs[REG_HEIGHT_CAM2_EXPOSURE] = 5000
+    plc.regs[31] = 200  # height brightness threshold
+    plc.regs[32] = 100  # min_y
+    plc.regs[35] = 50   # height comparison
+
+    legacy_plc = LegacyFronbackPLC(plc_base=plc)
+    # Wire cam2 to the height-mode-friendly directory
+    cam = MockCameraManager({1: d1, 2: height_dir})
+    roi = make_file_roi_provider(cam, base_dir=tmp_path, logger=_logger())
+
+    orchestrator = LegacyFronbackOrchestrator(
+        legacy_plc, cam, roi, _logger(),
+        png_path=tmp_path / "p.png", rgb565_path=tmp_path / "p.rgb565",
+    )
+    task = asyncio.create_task(orchestrator.run())
+
+    # Let frontback iterations happen
+    await asyncio.sleep(0.3)
+    # Switch to HEIGHT mid-loop
+    plc.regs[2] = 0  # MODE_HEIGHT
+    await asyncio.sleep(0.4)
+    # Stop the loop
+    plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_IDLE
+    await asyncio.sleep(0.2)
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    # Both modes should have written results: D20-D23 (frontback edges)
+    # and D40 (height result) both appear.
+    addrs_written = [addr for addr, _ in plc.writes]
+    assert REG_EDGE1_LOW in addrs_written, "frontback portion of LOOP didn't run"
+    assert REG_HEIGHT_RESULT in addrs_written, "height portion of LOOP didn't run"
 
 
 @pytest.mark.asyncio

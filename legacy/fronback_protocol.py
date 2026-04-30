@@ -70,10 +70,21 @@ REG_HEIGHT_WIDTH_COMP = 36  # read but unused, kept for compat
 REG_HEIGHT_RESULT = 40
 REG_HEIGHT_WIDTH_RESULT = 41
 
-# Sentinel values from the original program.
+# Sentinel values.
+#
+# TRIGGER_FIRE / IDLE / DONE are byte-compat with the original
+# toothpastefronback program (it only ever wrote 10 to fire and observed
+# our 0/1 ack/done writes back). TRIGGER_LOOP was NOT in the original —
+# it's an additive extension lifted from the head/display source repos
+# (where it lives as CameraStatus.START_LOOP=11) so legacy customers
+# whose PLC ladder has been updated for continuous capture can use the
+# same dispatch path. Picking 11 specifically (not e.g. 12 or 99) keeps
+# alignment with v2's CameraStatus.START_LOOP, so a future migration
+# legacy → v2 doesn't need PLC value remaps.
 TRIGGER_FIRE = 10
 TRIGGER_IDLE = 0
 TRIGGER_DONE = 1
+TRIGGER_LOOP = 11
 
 MODE_HEIGHT = 0  # single-camera height detection
 MODE_FRONTBACK = 1  # dual-camera front/back detection
