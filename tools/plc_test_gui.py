@@ -89,7 +89,9 @@ V2_STATUS_NAMES = {
 V2_PRODUCT_NAMES = {
     0: "NONE", 1: "TOOTHPASTE_FRONTBACK", 2: "HEIGHT_CHECK", 3: "BRUSH_HEAD",
 }
-V2_FIRE = 10  # CameraStatus.START_TASK
+V2_FIRE = 10        # CameraStatus.START_TASK   — single capture
+V2_FIRE_LOOP = 11   # CameraStatus.START_LOOP   — continuous capture
+V2_IDLE = 0         # CameraStatus.IDLE         — stops a running loop
 
 
 # --------------------------------------------------------------------------- #
@@ -151,6 +153,29 @@ class PLC:
         with self._lock:
             self.client.write_single_register(config_base + V2_OFFSET_PRODUCT_TYPE, product_type)
             self.client.write_single_register(status_addr, V2_FIRE)
+
+    def v2_fire_loop(self, camera_num: int, product_type: int) -> None:
+        """Set D14/D34 = ProductType, then D1/D2 = 11 (CameraStatus.START_LOOP).
+
+        Loop mode runs the algorithm continuously — TaskManager.process_continuous_capture
+        keeps capturing until the camera status register is changed away from 11.
+        Use v2_stop_loop() to halt.
+        """
+        if camera_num == 1:
+            config_base = V2_CAM1_CONFIG_START
+            status_addr = V2_CAM1_STATUS
+        else:
+            config_base = V2_CAM2_CONFIG_START
+            status_addr = V2_CAM2_STATUS
+        with self._lock:
+            self.client.write_single_register(config_base + V2_OFFSET_PRODUCT_TYPE, product_type)
+            self.client.write_single_register(status_addr, V2_FIRE_LOOP)
+
+    def v2_stop_loop(self, camera_num: int) -> None:
+        """Halt a running START_LOOP by writing IDLE (0) to the camera status register."""
+        addr = V2_CAM1_STATUS if camera_num == 1 else V2_CAM2_STATUS
+        with self._lock:
+            self.client.write_single_register(addr, V2_IDLE)
 
 
 # --------------------------------------------------------------------------- #
@@ -380,14 +405,26 @@ class PLCTesterGUI:
                 variable=self.v2_product_type, value=value,
             ).pack(anchor="w")
 
-        # Fire button
+        # Fire / Loop / Stop buttons (vertical stack)
         fire_frame = ttk.Frame(ctrl)
         fire_frame.pack(side="left", padx=20, fill="y")
         self.v2_fire_btn = ttk.Button(
-            fire_frame, text="FIRE\n→ START_TASK",
-            command=self._fire_v2, width=18,
+            fire_frame, text="FIRE SINGLE\n(D=10, START_TASK)",
+            command=self._fire_v2, width=22,
         )
-        self.v2_fire_btn.pack(expand=True, fill="both")
+        self.v2_fire_btn.pack(pady=2, fill="x")
+
+        self.v2_fire_loop_btn = ttk.Button(
+            fire_frame, text="FIRE LOOP\n(D=11, START_LOOP)",
+            command=self._fire_v2_loop, width=22,
+        )
+        self.v2_fire_loop_btn.pack(pady=2, fill="x")
+
+        self.v2_stop_btn = ttk.Button(
+            fire_frame, text="STOP LOOP\n(D=0, IDLE)",
+            command=self._stop_v2, width=22,
+        )
+        self.v2_stop_btn.pack(pady=2, fill="x")
 
         # Per-camera state panels (side by side)
         state_frame = ttk.Frame(parent)
@@ -534,6 +571,46 @@ class PLCTesterGUI:
         finally:
             self.queue.put(("v2_buttons_on", None))
             self.queue.put(("refresh", None))
+
+    def _fire_v2_loop(self) -> None:
+        """Start continuous capture on the selected camera. Loop runs until
+        the user clicks STOP LOOP — no handshake polling because START_LOOP
+        does not terminate by itself."""
+        if self.plc is None:
+            messagebox.showwarning("Not connected", "Connect to the PLC first.")
+            return
+        cam = self.v2_camera.get()
+        pt = self.v2_product_type.get()
+        pt_name = V2_PRODUCT_NAMES.get(pt, str(pt))
+        config_base = V2_CAM1_CONFIG_START if cam == 1 else V2_CAM2_CONFIG_START
+        status_addr = V2_CAM1_STATUS if cam == 1 else V2_CAM2_STATUS
+        self._log(
+            f"[v2 LOOP] start cam{cam} {pt_name}: "
+            f"D{config_base + V2_OFFSET_PRODUCT_TYPE}={pt}, D{status_addr}=11"
+        )
+        try:
+            self.plc.v2_fire_loop(cam, pt)
+        except Exception as exc:
+            self._log(f"  [v2 LOOP] start error: {exc}")
+            return
+        self._log("  -> orchestrator now running continuously. Click STOP LOOP to halt. "
+                  "Enable Auto-refresh to see live state.")
+        self._refresh_status()
+
+    def _stop_v2(self) -> None:
+        """Halt a running START_LOOP by writing IDLE (0) to the camera status."""
+        if self.plc is None:
+            messagebox.showwarning("Not connected", "Connect to the PLC first.")
+            return
+        cam = self.v2_camera.get()
+        status_addr = V2_CAM1_STATUS if cam == 1 else V2_CAM2_STATUS
+        self._log(f"[v2 STOP] cam{cam}: D{status_addr}=0 (IDLE)")
+        try:
+            self.plc.v2_stop_loop(cam)
+        except Exception as exc:
+            self._log(f"  [v2 STOP] error: {exc}")
+            return
+        self._refresh_status()
 
     # ---------------- shared handshake polling ----------------
 

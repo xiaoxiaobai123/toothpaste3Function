@@ -9,6 +9,7 @@ and TaskManager.active_camera_nums() drives the per-camera asyncio tasks.
 from __future__ import annotations
 
 import threading
+import time
 
 import numpy as np
 
@@ -20,9 +21,26 @@ logger = log_config.setup_logging()
 
 
 class CameraManager:
+    # Auto-reinit policy: after this many consecutive capture failures on the
+    # same camera, the manager attempts to close + reopen the MVS device handle.
+    # Real-world cause: GigE camera "half-dead" state where ping still works but
+    # the stream channel hangs (network blip, firmware glitch, switch buffer
+    # overrun). MV_E_NER_TIMEOUT (0x80000206) and similar error codes resolve
+    # ~90% of the time after a fresh handle.
+    #
+    # Cooldown prevents pathological reinit-storms when the camera is genuinely
+    # offline (e.g. unplugged) — we attempt at most one reinit per cooldown
+    # window, then back off and let the orchestrator render OFFLINE placeholders
+    # until the network actually comes back.
+    AUTO_REINIT_THRESHOLD = 3
+    AUTO_REINIT_COOLDOWN_S = 30.0
+
     def __init__(self) -> None:
         self.cameras: dict[int, CameraBase] = {}
         self.camera_locks: dict[int, threading.Lock] = {}
+        # Per-camera failure tracking for auto-reinit decisions.
+        self._consecutive_failures: dict[int, int] = {}
+        self._last_reinit_at: dict[int, float] = {}
         self._initialize_cameras()
 
     def _initialize_cameras(self) -> None:
@@ -73,12 +91,49 @@ class CameraManager:
         with self.camera_locks[camera_num]:
             try:
                 image = camera.capture_image(is_hardware_trigger=is_hardware_trigger, max_retries=max_retries)
-                if image is None:
-                    logger.error(f"[Cam{camera_num}] capture returned no image")
-                return image
             except Exception as e:
                 logger.error(f"[Cam{camera_num}] capture exception: {e}")
-                return None
+                image = None
+
+        if image is None:
+            logger.error(f"[Cam{camera_num}] capture returned no image")
+            # Auto-reinit decision is outside the per-camera lock because
+            # reinitialize_camera() pops + recreates the camera entry; holding
+            # the old camera's lock during that swap would be a use-after-free.
+            self._maybe_auto_reinit(camera_num)
+        else:
+            # Successful capture clears the failure counter — only consecutive
+            # failures count toward the auto-reinit threshold.
+            self._consecutive_failures.pop(camera_num, None)
+        return image
+
+    def _maybe_auto_reinit(self, camera_num: int) -> None:
+        """Track consecutive failures and attempt a fresh init at threshold.
+
+        Cooldown prevents reinit storms when the camera is genuinely offline:
+        we try once, wait COOLDOWN_S, try again. Between attempts the
+        orchestrator's normal "cam offline" path keeps the line running with
+        OFFLINE placeholder frames.
+        """
+        n = self._consecutive_failures.get(camera_num, 0) + 1
+        self._consecutive_failures[camera_num] = n
+        if n < self.AUTO_REINIT_THRESHOLD:
+            return
+        now = time.monotonic()
+        if now - self._last_reinit_at.get(camera_num, 0.0) < self.AUTO_REINIT_COOLDOWN_S:
+            return
+        self._last_reinit_at[camera_num] = now
+        logger.warning(
+            f"[Cam{camera_num}] {n} consecutive capture failures — auto-reinit attempt"
+        )
+        if self.reinitialize_camera(camera_num):
+            logger.info(f"[Cam{camera_num}] auto-reinit succeeded")
+            self._consecutive_failures.pop(camera_num, None)
+        else:
+            logger.error(
+                f"[Cam{camera_num}] auto-reinit failed; will retry after "
+                f"{self.AUTO_REINIT_COOLDOWN_S:.0f}s cooldown"
+            )
 
     def set_exposure(self, camera_num: int, exposure_time: float) -> bool:
         camera = self.get_camera(camera_num)
