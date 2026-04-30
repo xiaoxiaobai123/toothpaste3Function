@@ -139,20 +139,59 @@ class CameraBase:
         self._get_payload_size()
 
     def _apply_roi(self) -> bool:
-        """Apply hardware ROI from self.roi. Skip when not configured.
+        """Apply hardware ROI from self.roi, OR explicitly reset to full frame.
 
-        Order matters: zero offsets first, then set width/height, then
-        re-apply offsets. Otherwise a new size + old offset combo can
-        exceed the sensor's max range and the camera rejects it.
+        Hikvision GigE Width/Height/OffsetX/OffsetY persist in camera
+        firmware state across MV_CC_OpenDevice cycles. Leaving them
+        alone when self.roi is None means a previously-configured small
+        ROI stays in effect even after we drop the field from config.json
+        — the host receives a small frame but the algorithm thinks it has
+        the full sensor frame, producing scrambled output.
+
+        Always SetIntValue explicitly: either to the configured ROI, or
+        to sensor max + offset 0. Order matters — zero offsets first
+        (frees up Width/Height to sensor max), then set width/height,
+        then re-apply offsets.
         """
-        if not self.roi:
-            return True
-
-        w, h = self.roi["width"], self.roi["height"]
-        ox, oy = self.roi.get("offset_x", 0), self.roi.get("offset_y", 0)
-
+        # Zero offsets first so the subsequent Width/Height max-query
+        # returns sensor max, not the residual sensor_max - old_offset.
         self.cam.MV_CC_SetIntValue("OffsetX", 0)
         self.cam.MV_CC_SetIntValue("OffsetY", 0)
+
+        if self.roi:
+            w = self.roi["width"]
+            h = self.roi["height"]
+            ox = self.roi.get("offset_x", 0)
+            oy = self.roi.get("offset_y", 0)
+            log_label = f"{w}x{h} @ ({ox},{oy})"
+        else:
+            # Reset path: query sensor max via Width/Height nMax (now
+            # accurate because both offsets are 0). Setting Width=nMax
+            # then Height=nMax restores full frame; offsets stay at 0.
+            max_w = MVCC_INTVALUE()
+            memset(byref(max_w), 0, sizeof(MVCC_INTVALUE))
+            ret = self.cam.MV_CC_GetIntValue("Width", max_w)
+            if ret != 0:
+                logger.error(
+                    f"{self._tag} GetIntValue Width failed, ret=0x{ret:x}; "
+                    "cannot reset to full frame — power-cycle the camera"
+                )
+                return False
+            w = max_w.nMax
+
+            max_h = MVCC_INTVALUE()
+            memset(byref(max_h), 0, sizeof(MVCC_INTVALUE))
+            ret = self.cam.MV_CC_GetIntValue("Height", max_h)
+            if ret != 0:
+                logger.error(
+                    f"{self._tag} GetIntValue Height failed, ret=0x{ret:x}; "
+                    "cannot reset to full frame — power-cycle the camera"
+                )
+                return False
+            h = max_h.nMax
+
+            ox = oy = 0
+            log_label = f"full-frame {w}x{h} (sensor max)"
 
         ret = self.cam.MV_CC_SetIntValue("Width", w)
         if ret != 0:
@@ -173,7 +212,7 @@ class CameraBase:
             if ret != 0:
                 logger.warning(f"{self._tag} set OffsetY={oy} failed, ret=0x{ret:x}")
 
-        logger.info(f"{self._tag} ROI applied: {w}x{h} @ ({ox},{oy})")
+        logger.info(f"{self._tag} ROI applied: {log_label}")
         return True
 
     def _set_packet_size(self) -> None:
