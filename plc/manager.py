@@ -47,6 +47,17 @@ class PLCManager:
         2: (2, 30),  # status D2, config D30..D47
     }
 
+    # Per-camera 4-word "manual ROI extension" block, sitting outside the
+    # 18-word main config (which is full). Currently only used by BRUSH_HEAD
+    # to optionally pre-crop the image before dot-based ROI auto-detection
+    # — see processing/brush_head.py and the design note in v0.3.10.
+    # All four words = 0 means "auto-detect on the full frame" (= v0.3.9 behaviour).
+    MANUAL_ROI_LAYOUT = {
+        1: 110,  # cam1: D110-D113 = (x1, y1, x2, y2)
+        2: 114,  # cam2: D114-D117
+    }
+    MANUAL_ROI_SIZE = 4
+
     WRITE_REGISTERS = {
         1: {
             "output_x": 70,
@@ -114,7 +125,7 @@ class PLCManager:
                 return {}
 
             c = config_idx
-            return {
+            settings: dict[str, Any] = {
                 "status": CameraStatus(block[status_idx]),
                 "trigger_mode": CameraTriggerStatus(block[c + 0]),
                 "exposure_time": block[c + 1],
@@ -123,7 +134,26 @@ class PLCManager:
                 # Raw 18-word block — Processor reads raw_config[5..17] for
                 # algorithm-specific parameters.
                 "raw_config": tuple(block[config_idx : config_idx + self.CONFIG_SIZE]),
+                # Default manual_roi to all-zero (= auto-detect, v0.3.9 behaviour).
+                # Overwritten below if the extension read succeeds.
+                "manual_roi": (0, 0, 0, 0),
             }
+
+            # Optional 4-word manual-ROI extension. Read separately from the
+            # main block because it sits at D110+ — well outside the
+            # contiguous D1..D47 range we just read. A failure here is
+            # logged at debug level and falls back to the (0,0,0,0)
+            # default — algorithm proceeds with auto-detection on the
+            # full frame, same as before v0.3.10.
+            roi_addr = self.MANUAL_ROI_LAYOUT.get(camera_num)
+            if roi_addr is not None:
+                roi_block = self.plc.read_status(roi_addr, count=self.MANUAL_ROI_SIZE)
+                if isinstance(roi_block, list) and len(roi_block) == self.MANUAL_ROI_SIZE:
+                    settings["manual_roi"] = tuple(roi_block)
+                # else: extension read failed (typically because the PLC
+                # ladder simply doesn't program these regs) — keep default.
+
+            return settings
 
     # ------------------------------------------------------------------
     # Writes

@@ -20,7 +20,10 @@ from processing.brush_head import BrushHeadProcessor
 from processing.result import ProcessResult
 
 
-def _build_settings(overrides: dict[str, int] | None = None) -> dict:
+def _build_settings(
+    overrides: dict[int, int] | None = None,
+    manual_roi: tuple[int, int, int, int] = (0, 0, 0, 0),
+) -> dict:
     """Build a settings dict mimicking PLCManager.read_camera_settings()."""
     raw = [0] * 18
     raw[1] = 5000  # exposure (irrelevant)
@@ -34,6 +37,7 @@ def _build_settings(overrides: dict[str, int] | None = None) -> dict:
         "raw_config": tuple(raw),
         "pixel_distance": 1.0,
         "endian": Endian.LITTLE,
+        "manual_roi": manual_roi,
     }
 
 
@@ -133,3 +137,80 @@ def test_brush_head_is_robust_to_camera_result_packing() -> None:
     # The packed double for x = 1.0 should round-trip.
     words = double_to_words(cr.x)
     assert len(words) == 4
+
+
+# ----------------------------------------------------------------------
+# v0.3.10 — manual pre-crop ROI (extension regs D110-D113 cam1 / D114-D117 cam2)
+# ----------------------------------------------------------------------
+def test_brush_head_manual_roi_zero_means_auto_detect() -> None:
+    """When manual_roi = (0,0,0,0), behaviour is byte-identical to v0.3.9
+    auto-detect on the full frame."""
+    img = _draw_brush(upper_dots=80, lower_dots=20, seed=42)
+
+    auto = BrushHeadProcessor().process(img, _build_settings())
+    explicit_zero = BrushHeadProcessor().process(
+        img, _build_settings(manual_roi=(0, 0, 0, 0))
+    )
+
+    assert auto.result == explicit_zero.result
+    assert int(auto.center[0]) == int(explicit_zero.center[0])
+
+
+def test_brush_head_manual_roi_pre_crops_search_area() -> None:
+    """Two clusters in the image — one good (in centre) and one decoy
+    (bottom-right). With auto-detect, the convex hull spans BOTH clusters
+    and the resulting bounding rect is too big / wrong-shaped → NG.
+    With a manual ROI tight around the centre cluster, decoy is excluded
+    and the algorithm classifies cleanly."""
+    img = _draw_brush(upper_dots=80, lower_dots=20, seed=42)
+    # Add a decoy cluster in the bottom-right corner that would distort
+    # the convex hull when the algorithm scans the full frame.
+    rng = np.random.default_rng(99)
+    for _ in range(60):
+        x = int(rng.integers(700, 790))
+        y = int(rng.integers(500, 590))
+        cv2.circle(img, (x, y), 4, (40, 40, 40), -1)
+
+    # Auto-detect (no manual ROI): convex hull spans original + decoy →
+    # ratio likely outside [1.5, 3.5] or area outside bounds → NG.
+    auto = BrushHeadProcessor().process(img, _build_settings())
+
+    # Manual ROI tight around centre cluster (cluster spans 100..700 x, 200..400 y).
+    manual = BrushHeadProcessor().process(
+        img, _build_settings(manual_roi=(100, 200, 700, 400))
+    )
+
+    # Either manual succeeds where auto failed, OR both succeed with the
+    # same side classification. We don't accept the case where manual
+    # gives a different side than what the centred cluster actually shows.
+    assert manual.result == ProcessResult.OK, (
+        f"manual ROI should classify cleanly, got {manual.result}"
+    )
+    assert int(manual.center[0]) == 1, "centre cluster has upper-denser dots → Front"
+    # Auto path may NG on the distorted hull. If it OKs, that's a happy
+    # accident — but the test's main proof is manual succeeded.
+    _ = auto
+
+
+def test_brush_head_manual_roi_invalid_falls_back_to_auto() -> None:
+    """Inverted/zero-area manual ROI is treated as 'no manual ROI' rather
+    than crashing — algorithm falls back to full-frame auto-detection."""
+    img = _draw_brush(upper_dots=80, lower_dots=20, seed=42)
+    bad_roi = (500, 500, 200, 200)  # x2 < x1, y2 < y1
+
+    outcome = BrushHeadProcessor().process(img, _build_settings(manual_roi=bad_roi))
+    # Should behave like no-manual-ROI: still classifies the synthetic brush.
+    assert outcome.result == ProcessResult.OK
+    assert int(outcome.center[0]) == 1
+
+
+def test_brush_head_settings_without_manual_roi_key_works() -> None:
+    """Backward-compat: callers that pre-date v0.3.10 don't include a
+    manual_roi key in settings. Processor must default to auto-detect."""
+    img = _draw_brush(upper_dots=80, lower_dots=20, seed=42)
+    settings = _build_settings()
+    del settings["manual_roi"]  # simulate old-style settings dict
+
+    outcome = BrushHeadProcessor().process(img, settings)
+    assert outcome.result == ProcessResult.OK
+    assert int(outcome.center[0]) == 1

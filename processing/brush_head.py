@@ -24,6 +24,17 @@ PLC parameter layout (raw_config[5..15]):
     +14 roi_ratio_min × 10  uint16   default 15  (= 1.5)
     +15 roi_ratio_max × 10  uint16   default 35  (= 3.5)
 
+Optional manual pre-crop ROI (settings["manual_roi"], from PLCManager's
+extension block at D110-D113 cam1 / D114-D117 cam2):
+    (x1, y1, x2, y2) — when all four are non-zero AND form a valid
+    rectangle, the image is pre-cropped to this region BEFORE the dot
+    detection runs. This is the equivalent of the original head program's
+    "manual ROI" feature (toothpasthead/image_processing.py:79-100) and
+    is the recommended fix when the auto-detected ROI keeps tripping
+    roi_area_max because background reflections are being picked up as
+    bristle dots. (0,0,0,0) = auto-detect on the full frame, identical
+    to v0.3.9 behaviour.
+
 The Outcome's `center` field carries the side code (1=Front, 2=Back) in x,
 mirroring the head repo's convention. `angle` stays at 0.
 """
@@ -60,6 +71,11 @@ class BrushHeadProcessor(Processor):
         "roi_ratio_max": 3.5,
     }
 
+    # Manual pre-crop ROI default — all-zero means "auto-detect on full
+    # frame" (= v0.3.9 behaviour). Stored as a separate constant rather
+    # than in DEFAULTS because it's a 4-tuple, not a scalar.
+    MANUAL_ROI_DEFAULT: tuple[int, int, int, int] = (0, 0, 0, 0)
+
     MIN_DOTS_FOR_HULL = 10
     MIN_CROP_DIM = 20
 
@@ -69,10 +85,32 @@ class BrushHeadProcessor(Processor):
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             h_img, w_img = gray.shape
 
-            # 1. Find ROI by dot convex hull.
-            roi_result = self._find_roi_by_dots(gray, bp)
+            # 1. Optional manual pre-crop. When PLC sets D110-D113 (cam1) /
+            # D114-D117 (cam2) to a valid rect, narrow the search area before
+            # dot detection — same logic as toothpasthead's original code.
+            mx1, my1, mx2, my2 = bp["manual_roi"]
+            mx2 = min(int(mx2), w_img)
+            my2 = min(int(my2), h_img)
+            mx1 = max(0, int(mx1))
+            my1 = max(0, int(my1))
+            use_manual_roi = (
+                bp["manual_roi"][0] > 0 and bp["manual_roi"][1] > 0
+                and mx2 > mx1 and my2 > my1
+            )
+            if use_manual_roi:
+                search_gray = gray[my1:my2, mx1:mx2]
+                manual_roi_offset = (mx1, my1)
+            else:
+                search_gray = gray
+                manual_roi_offset = (0, 0)
+
+            # 2. Find ROI by dot convex hull (within manual pre-crop, if set).
+            roi_result = self._find_roi_by_dots(search_gray, bp)
             if roi_result is None:
-                logger.error("[BrushHead] no valid ROI found")
+                logger.error(
+                    "[BrushHead] no valid ROI found"
+                    + (f" (within manual ROI ({mx1},{my1})-({mx2},{my2}))" if use_manual_roi else "")
+                )
                 return Outcome(
                     ProcessResult.NG,
                     self._fail_image(image, "No valid ROI found", bp, h_img),
@@ -81,11 +119,23 @@ class BrushHeadProcessor(Processor):
                 )
 
             rect, box, _, roi_area, roi_ratio, dot_count = roi_result
+            # When pre-cropped, _find_roi_by_dots returns coordinates in the
+            # SUB-image frame. Translate everything back to the full-image
+            # frame so the rotation matrix and downstream draws operate on
+            # the original-image coordinate system. (No-op when no manual ROI.)
+            if use_manual_roi:
+                offset = np.array(manual_roi_offset, dtype=np.float32)
+                box = box + offset
+                rect = (
+                    (rect[0][0] + manual_roi_offset[0], rect[0][1] + manual_roi_offset[1]),
+                    rect[1],
+                    rect[2],
+                )
             center = rect[0]
             long_len, short_len, long_angle = self._edge_info(box)
             rot_angle = -long_angle if long_angle <= 90 else 180 - long_angle
 
-            # 2. Rotate image so the head's long axis is horizontal.
+            # 3. Rotate image so the head's long axis is horizontal.
             M, nw, nh = self._rotation_matrix(center, rot_angle, w_img, h_img)
             rot_gray = cv2.warpAffine(gray, M, (nw, nh), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
@@ -155,6 +205,7 @@ class BrushHeadProcessor(Processor):
                 dot_count,
                 roi_area,
                 roi_ratio,
+                manual_roi=(mx1, my1, mx2, my2) if use_manual_roi else None,
             )
 
             # The Outcome.center carries the side code (head repo convention):
@@ -178,11 +229,13 @@ class BrushHeadProcessor(Processor):
     # ------------------------------------------------------------------
     # PLC parameter parsing
     # ------------------------------------------------------------------
-    def _parse_params(self, settings: dict[str, Any]) -> dict[str, float]:
+    def _parse_params(self, settings: dict[str, Any]) -> dict[str, Any]:
         raw = settings.get("raw_config")
         if not raw or len(raw) < 16:
             logger.warning("[BrushHead] raw_config missing or short, using defaults")
-            return self.DEFAULTS.copy()
+            bp = self.DEFAULTS.copy()
+            bp["manual_roi"] = self.MANUAL_ROI_DEFAULT
+            return bp
 
         endian = settings.get("endian", Endian.LITTLE)
 
@@ -216,6 +269,15 @@ class BrushHeadProcessor(Processor):
             )
             bp["dot_area_min"] = self.DEFAULTS["dot_area_min"]
             bp["dot_area_max"] = self.DEFAULTS["dot_area_max"]
+
+        # Manual pre-crop ROI from PLCManager's extension block (settings["manual_roi"],
+        # populated by PLCManager.read_camera_settings from D110-D113 cam1 / D114-D117
+        # cam2). Default = (0,0,0,0) when the extension wasn't readable or PLC didn't
+        # set it — process() interprets that as "auto-detect on full frame".
+        manual = settings.get("manual_roi", self.MANUAL_ROI_DEFAULT)
+        if not (isinstance(manual, tuple | list) and len(manual) == 4):
+            manual = self.MANUAL_ROI_DEFAULT
+        bp["manual_roi"] = tuple(int(v) for v in manual)
 
         return bp
 
@@ -390,8 +452,20 @@ class BrushHeadProcessor(Processor):
         dot_count: int,
         roi_area: float,
         roi_ratio: float,
+        manual_roi: tuple[int, int, int, int] | None = None,
     ) -> np.ndarray:
         vis = original.copy()
+
+        # Manual pre-crop ROI overlay (purple, axis-aligned). Drawn first so
+        # the auto-detected red ROI lands on top of it visually.
+        if manual_roi is not None:
+            mx1, my1, mx2, my2 = manual_roi
+            cv2.rectangle(vis, (mx1, my1), (mx2, my2), (255, 0, 255), 2)
+            cv2.putText(
+                vis, "Manual ROI",
+                (mx1, max(0, my1 - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1, cv2.LINE_AA,
+            )
 
         roi_corners = self._transform_rect_to_original(M_inv, *roi_rect_rot)
         cv2.drawContours(vis, [roi_corners], -1, (0, 0, 255), 2)

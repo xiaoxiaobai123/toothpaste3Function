@@ -79,6 +79,11 @@ V2_CAM2_OUTPUT_X = 90
 V2_CAM2_OUTPUT_Y = 94
 V2_CAM2_AREA = 103
 
+# BRUSH_HEAD manual pre-crop ROI extension block (v0.3.10+). Separate from
+# the main 18-word config because that block is full. (x1, y1, x2, y2)
+# uint16 each. All zero = auto-detect on full frame (= v0.3.9 behaviour).
+V2_BRUSH_MANUAL_ROI = {1: 110, 2: 114}  # cam1: D110-D113, cam2: D114-D117
+
 V2_OFFSET_TRIGGER = 0
 V2_OFFSET_EXPOSURE = 1
 V2_OFFSET_PRODUCT_TYPE = 4
@@ -234,7 +239,12 @@ class PLC:
         Use case: testing v2 mode on a NanoPi whose PLC ladder is still
         programmed for a different protocol (typically legacy_fronback —
         in which case D15..D27 contain garbage from edge counts etc., and
-        the v2 algorithm rejects the bogus parameters)."""
+        the v2 algorithm rejects the bogus parameters).
+
+        For BRUSH_HEAD, also zeroes the 4-word manual-pre-crop ROI extension
+        (D110-D113 cam1 / D114-D117 cam2) — auto-detect on full frame is
+        the safe default. Use `v2_set_brush_manual_roi` to override.
+        """
         if product_type not in V2_DEFAULTS:
             return 0
         config_base = V2_CAM1_CONFIG_START if camera_num == 1 else V2_CAM2_CONFIG_START
@@ -242,7 +252,32 @@ class PLC:
         with self._lock:
             for offset, value in writes:
                 self.client.write_single_register(config_base + offset, value)
-        return len(writes)
+            if product_type == 3:  # BRUSH_HEAD: also reset manual-ROI extension to all-zero
+                roi_base = V2_BRUSH_MANUAL_ROI[camera_num]
+                for i in range(4):
+                    self.client.write_single_register(roi_base + i, 0)
+        n = len(writes)
+        if product_type == 3:
+            n += 4
+        return n
+
+    def v2_set_brush_manual_roi(
+        self, camera_num: int, x1: int, y1: int, x2: int, y2: int
+    ) -> None:
+        """Write 4 words to the BRUSH_HEAD manual-pre-crop ROI extension block.
+
+        Set (0,0,0,0) to disable manual ROI (= auto-detect on full frame).
+        Set non-zero coordinates to make the algorithm pre-crop the image to
+        (x1,y1)-(x2,y2) before running dot detection. This dramatically
+        narrows the search area — necessary when the convex hull of detected
+        dots spans most of the frame (e.g. background reflections being
+        picked up as bristles)."""
+        base = V2_BRUSH_MANUAL_ROI[camera_num]
+        with self._lock:
+            self.client.write_single_register(base + 0, max(0, int(x1)))
+            self.client.write_single_register(base + 1, max(0, int(y1)))
+            self.client.write_single_register(base + 2, max(0, int(x2)))
+            self.client.write_single_register(base + 3, max(0, int(y2)))
 
 
 # --------------------------------------------------------------------------- #
@@ -534,6 +569,22 @@ class PLCTesterGUI:
         )
         self.v2_defaults_btn.pack(pady=(8, 2), fill="x")
 
+        # BRUSH_HEAD-specific: manual pre-crop ROI buttons (v0.3.10+).
+        # Visible regardless of selected ProductType but only useful when
+        # ProductType=BRUSH_HEAD. Center-60% writes a sane default; Clear
+        # zeros the extension regs to restore auto-detect behaviour.
+        self.v2_manual_center_btn = ttk.Button(
+            fire_frame, text="BRUSH manual ROI:\ncenter 60%",
+            command=self._set_brush_manual_roi_center, width=22,
+        )
+        self.v2_manual_center_btn.pack(pady=(8, 2), fill="x")
+
+        self.v2_manual_clear_btn = ttk.Button(
+            fire_frame, text="BRUSH manual ROI:\nclear (auto-detect)",
+            command=self._clear_brush_manual_roi, width=22,
+        )
+        self.v2_manual_clear_btn.pack(pady=2, fill="x")
+
         # Per-camera state panels (side by side)
         state_frame = ttk.Frame(parent)
         state_frame.pack(fill="both", padx=4, pady=4, expand=True)
@@ -780,6 +831,46 @@ class PLCTesterGUI:
             return
         self._log(f"  -> wrote {n} registers. Now click FIRE to test with sane params.")
         self._refresh_status()
+
+    def _set_brush_manual_roi_center(self) -> None:
+        """Pre-set the BRUSH_HEAD manual-pre-crop ROI to the center 60% of
+        a typical 1280×1024 GigE frame. Narrows the dot-detection search
+        area, dropping background reflections out of the convex hull and
+        producing a much smaller (more credible) auto-detected ROI."""
+        if self.plc is None:
+            messagebox.showwarning("Not connected", "Connect to the PLC first.")
+            return
+        cam = self.v2_camera.get()
+        # Center 60% of 1280x1024: skip 256 px of margin per side horizontally,
+        # 204 px vertically. Caller can run a custom Modbus write for other
+        # framings — this button is just a sane preset for quick testing.
+        x1, y1, x2, y2 = 256, 204, 1024, 819
+        base = V2_BRUSH_MANUAL_ROI[cam]
+        self._log(
+            f"[BRUSH manual ROI] cam{cam}: "
+            f"D{base}..D{base + 3} = ({x1},{y1})-({x2},{y2})  [center 60% of 1280x1024]"
+        )
+        try:
+            self.plc.v2_set_brush_manual_roi(cam, x1, y1, x2, y2)
+        except Exception as exc:
+            self._log(f"  [BRUSH manual ROI] error: {exc}")
+            return
+        self._log("  -> next FIRE BRUSH_HEAD will pre-crop to this rect before dot detection")
+
+    def _clear_brush_manual_roi(self) -> None:
+        """Zero out the BRUSH_HEAD manual-pre-crop ROI extension block,
+        restoring full-frame auto-detect (= v0.3.9 behaviour)."""
+        if self.plc is None:
+            messagebox.showwarning("Not connected", "Connect to the PLC first.")
+            return
+        cam = self.v2_camera.get()
+        base = V2_BRUSH_MANUAL_ROI[cam]
+        self._log(f"[BRUSH manual ROI] cam{cam}: D{base}..D{base + 3} = 0,0,0,0 (auto-detect)")
+        try:
+            self.plc.v2_set_brush_manual_roi(cam, 0, 0, 0, 0)
+        except Exception as exc:
+            self._log(f"  [BRUSH manual ROI] error: {exc}")
+            return
 
     # ---------------- shared handshake polling ----------------
 
