@@ -113,7 +113,10 @@ class BrushHeadProcessor(Processor):
                 )
                 return Outcome(
                     ProcessResult.NG,
-                    self._fail_image(image, "No valid ROI found", bp, h_img),
+                    self._fail_image(
+                        image, "No valid ROI found", bp, h_img,
+                        manual_roi=(mx1, my1, mx2, my2) if use_manual_roi else None,
+                    ),
                     (0.0, 0.0),
                     0.0,
                 )
@@ -163,7 +166,10 @@ class BrushHeadProcessor(Processor):
                 logger.error(f"[BrushHead] crop too small: {crop_w}x{crop_h}")
                 return Outcome(
                     ProcessResult.NG,
-                    self._fail_image(image, "Crop too small", bp, h_img),
+                    self._fail_image(
+                        image, "Crop too small", bp, h_img,
+                        manual_roi=(mx1, my1, mx2, my2) if use_manual_roi else None,
+                    ),
                     (0.0, 0.0),
                     0.0,
                 )
@@ -408,9 +414,32 @@ class BrushHeadProcessor(Processor):
     # ------------------------------------------------------------------
     # Drawing
     # ------------------------------------------------------------------
-    def _fail_image(self, image: np.ndarray, msg: str, bp: dict[str, float], img_h: int) -> np.ndarray:
+    def _fail_image(
+        self,
+        image: np.ndarray,
+        msg: str,
+        bp: dict[str, float],
+        img_h: int,
+        manual_roi: tuple[int, int, int, int] | None = None,
+    ) -> np.ndarray:
+        """Diagnostic image returned when the algorithm rejects a frame.
+
+        Draws the failure message + (optionally) the manual pre-crop ROI
+        rectangle so the operator can see WHERE the algorithm was looking.
+        Matches the original toothpasthead/_fail_image behaviour — earlier
+        v0.3.10 forgot to draw manual_roi here, leaving the operator
+        confused about whether manual ROI was even active.
+        """
         vis = image.copy()
         cv2.putText(vis, msg, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+        if manual_roi is not None:
+            mx1, my1, mx2, my2 = manual_roi
+            cv2.rectangle(vis, (mx1, my1), (mx2, my2), (255, 0, 255), 2)
+            cv2.putText(
+                vis, "Manual ROI",
+                (mx1, max(0, my1 - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1, cv2.LINE_AA,
+            )
         self._draw_param_info(vis, bp, img_h)
         return vis
 

@@ -214,3 +214,45 @@ def test_brush_head_settings_without_manual_roi_key_works() -> None:
     outcome = BrushHeadProcessor().process(img, settings)
     assert outcome.result == ProcessResult.OK
     assert int(outcome.center[0]) == 1
+
+
+def test_brush_head_fail_image_draws_manual_roi() -> None:
+    """v0.3.11 fix: when the algorithm rejects a frame (e.g. ratio out of
+    bounds) and a manual ROI was active, the fail-visualization image must
+    show the purple manual-ROI rectangle so the operator can see WHERE
+    the algorithm was looking. v0.3.10 forgot to draw it."""
+    # Blank image so dot detection fails immediately; manual_roi set.
+    img = np.full((600, 800, 3), 230, dtype=np.uint8)
+    manual_roi = (100, 100, 700, 500)
+    outcome = BrushHeadProcessor().process(
+        img, _build_settings(manual_roi=manual_roi)
+    )
+    # Expect failure (no dots → no valid ROI).
+    assert outcome.result == ProcessResult.NG
+    fail_img = outcome.image
+
+    # Sample a pixel along the rectangle's top edge — should be purple
+    # (BGR (255, 0, 255)). The line is 2 px thick so check a 4-pixel band.
+    top_band = fail_img[manual_roi[1] : manual_roi[1] + 2, manual_roi[0] + 50, :]
+    # At least one pixel in the band should be ~purple.
+    purple_match = (top_band[..., 0] > 200) & (top_band[..., 1] < 50) & (top_band[..., 2] > 200)
+    assert purple_match.any(), (
+        f"expected purple manual-ROI rect on fail image; sampled top band={top_band.tolist()}"
+    )
+
+
+def test_brush_head_fail_image_omits_manual_roi_when_none() -> None:
+    """If no manual ROI was active, the fail image must NOT contain a
+    purple rectangle (auto-detect fail looks like 'message + params only')."""
+    img = np.full((600, 800, 3), 230, dtype=np.uint8)
+    outcome = BrushHeadProcessor().process(img, _build_settings())  # default = auto
+    assert outcome.result == ProcessResult.NG
+    fail_img = outcome.image
+
+    # No purple should appear anywhere on the fail image (just red text + grey params).
+    purple_pixels = (
+        (fail_img[..., 0] > 200) & (fail_img[..., 1] < 50) & (fail_img[..., 2] > 200)
+    ).sum()
+    assert purple_pixels < 50, (
+        f"expected ~no purple on auto-detect fail image, found {purple_pixels} pixels"
+    )
