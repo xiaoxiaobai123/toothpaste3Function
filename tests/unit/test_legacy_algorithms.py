@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
+import pytest
 
 from legacy.fronback_algorithms import (
     EDGE_INTENSITY_THRESHOLD,
     HEIGHT_CHANNEL_INDEX,
     compute_frontback,
+    compute_frontback_parallel,
     compute_height,
 )
 
@@ -83,6 +85,24 @@ def test_frontback_respects_per_camera_roi() -> None:
 def test_frontback_threshold_constant_matches_original() -> None:
     """Sanity check: original program hard-codes 30."""
     assert EDGE_INTENSITY_THRESHOLD == 30
+
+
+@pytest.mark.asyncio
+async def test_frontback_parallel_matches_sequential() -> None:
+    """compute_frontback_parallel must produce byte-identical output to
+    the sequential version — same Sobel calls, same threshold, same
+    is_front comparison, just run in worker threads. Drift between the
+    two versions would mean OK/NG boundaries shift in the field."""
+    img1 = _striped_image(600, 400, n_stripes=40)
+    img2 = _striped_image(600, 400, n_stripes=8)
+    roi = _full_roi(600, 400)
+
+    seq = compute_frontback(img1, img2, roi, roi)
+    par = await compute_frontback_parallel(img1, img2, roi, roi)
+
+    assert par.is_front == seq.is_front
+    assert par.edge1_count == seq.edge1_count
+    assert par.edge2_count == seq.edge2_count
 
 
 def test_frontback_handles_empty_roi() -> None:

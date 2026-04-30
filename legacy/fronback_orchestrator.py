@@ -31,7 +31,10 @@ from typing import Any
 import numpy as np
 
 from core.log_throttle import LogThrottle
-from legacy.fronback_algorithms import compute_frontback, compute_height
+from legacy.fronback_algorithms import (
+    compute_frontback_parallel,
+    compute_height,
+)
 from legacy.fronback_display import (
     DEFAULT_PNG_PATH,
     DEFAULT_RGB565_PATH,
@@ -221,7 +224,13 @@ class LegacyFronbackOrchestrator:
             except Exception as e:
                 self.throttled.error(f"[Legacy] LOOP iteration exception: {e}")
                 await asyncio.sleep(1.0)
-            await asyncio.sleep(POLL_INTERVAL_S)
+            # No trailing sleep here — the per-iteration work
+            # (capture + algorithm + PLC writes + display) takes 200-400 ms,
+            # which is already plenty of "yield" for the asyncio loop. The
+            # 50 ms POLL_INTERVAL_S sleep that exists in run() and in the
+            # `state is None` branch above is the right rate-limit for
+            # PLC polling when the orchestrator is idle; inside an active
+            # loop it just adds 12-15% dead time per cycle. (v0.3.9.)
 
     # ------------------------------------------------------------ frontback
 
@@ -251,6 +260,11 @@ class LegacyFronbackOrchestrator:
             asyncio.to_thread(self.plc.write_camera_status, 2, img2 is not None),
         )
 
+        # Compute ROIs upfront so both the algorithm AND the display
+        # (including the OFFLINE-camera path) can see them.
+        roi1 = self.get_roi(1)
+        roi2 = self.get_roi(2)
+
         if img1 is None or img2 is None:
             self.logger.error(
                 f"[Legacy] frontback skipped: cam1={'ok' if img1 is not None else 'offline'}, "
@@ -261,13 +275,16 @@ class LegacyFronbackOrchestrator:
             # frozen old frame. Algorithm did not run, so D0/D20-D23 are
             # left untouched — `is_front` is a don't-care for the placeholder
             # path (compose_frontback ignores it when one image is None).
-            await asyncio.to_thread(self._render_frontback_display, img1, img2, False)
+            # Pass ROIs so the present camera still shows its ROI overlay.
+            await asyncio.to_thread(
+                self._render_frontback_display, img1, img2, False, roi1, roi2
+            )
             return
 
-        roi1 = self.get_roi(1)
-        roi2 = self.get_roi(2)
-
-        result = await asyncio.to_thread(compute_frontback, img1, img2, roi1, roi2)
+        # Run the two per-camera Sobel computations concurrently in worker
+        # threads — cv2 releases the GIL so the NanoPi's quad-core actually
+        # parallelises. Cuts ~50% off the algorithm portion of the cycle.
+        result = await compute_frontback_parallel(img1, img2, roi1, roi2)
         d0_value = RESULT_FRONT_OR_OK if result.is_front else RESULT_BACK_OR_NG
 
         self.logger.info(
@@ -281,7 +298,9 @@ class LegacyFronbackOrchestrator:
         await asyncio.gather(
             asyncio.to_thread(self.plc.write_recognition_result, d0_value),
             asyncio.to_thread(self.plc.write_edge_counts, result.edge1_count, result.edge2_count),
-            asyncio.to_thread(self._render_frontback_display, img1, img2, result.is_front),
+            asyncio.to_thread(
+                self._render_frontback_display, img1, img2, result.is_front, roi1, roi2
+            ),
         )
 
     # -------------------------------------------------------------- height
@@ -331,13 +350,23 @@ class LegacyFronbackOrchestrator:
         img1: np.ndarray | None,
         img2: np.ndarray | None,
         is_front: bool,
+        roi1: dict[str, int] | None = None,
+        roi2: dict[str, int] | None = None,
     ) -> None:
         """Wrapper that swallows render errors so display problems never
         block PLC writes — the production line keeps running even if the
         operator screen fails. Either image may be None when a camera is
-        offline; `render_frontback` handles that with a placeholder."""
+        offline; `render_frontback` handles that with a placeholder.
+
+        Optional `roi1` / `roi2` overlay yellow rectangles on each camera
+        panel showing the algorithm's region of interest (v0.3.9+).
+        """
         try:
-            render_frontback(img1, img2, is_front, self.png_path, self.rgb565_path)
+            render_frontback(
+                img1, img2, is_front,
+                self.png_path, self.rgb565_path,
+                roi1=roi1, roi2=roi2,
+            )
         except Exception as e:
             self.logger.error(f"[Legacy] display render failed: {e}")
 

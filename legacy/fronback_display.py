@@ -71,10 +71,52 @@ _BAR_HEIGHT = 25
 _BORDER_WIDTH = 2
 _SEPARATOR_WIDTH = 2
 
+# ROI rectangle — drawn on the original full-res image before _build_panel
+# resizes it down by 0.4x, so the line ends up ~1.6 px on the panel: clearly
+# visible without overpowering the actual image.
+_ROI_COLOR = (0, 255, 255)  # yellow (BGR)
+_ROI_THICKNESS = 4
+
 # Default placeholder size when both cameras are missing — typical Hikvision
 # GigE frame is 1280x800 (the resize step crunches it down to 0.4x anyway,
 # so the exact value mostly affects text legibility).
 _PLACEHOLDER_DEFAULT_SIZE = (800, 1280)  # (height, width)
+
+
+def _draw_roi(image: np.ndarray, roi: dict[str, int]) -> np.ndarray:
+    """Stamp a yellow rectangle showing the algorithm ROI on a copy of `image`.
+
+    ROI keys: x1/y1/x2/y2 in original-image pixel coordinates (matches
+    `_count_sobel_edges` slicing). Coordinates are clamped to image bounds
+    so a malformed ROI file (e.g. coordinates beyond frame size) doesn't
+    crash render.
+    """
+    out = image.copy()
+    h, w = out.shape[:2]
+    x1 = max(0, min(w - 1, int(roi.get("x1", 0))))
+    y1 = max(0, min(h - 1, int(roi.get("y1", 0))))
+    x2 = max(0, min(w - 1, int(roi.get("x2", w - 1))))
+    y2 = max(0, min(h - 1, int(roi.get("y2", h - 1))))
+    if x2 > x1 and y2 > y1:
+        cv2.rectangle(out, (x1, y1), (x2, y2), _ROI_COLOR, _ROI_THICKNESS)
+    return out
+
+
+def _prep_panel_image(
+    image: np.ndarray | None,
+    roi: dict[str, int] | None,
+    cam_num: int,
+    ref_shape: tuple[int, int] | None,
+) -> np.ndarray:
+    """Resolve image vs OFFLINE placeholder, and stamp the ROI rectangle
+    on the camera image when one is provided. The placeholder branch
+    intentionally skips ROI — there's no algorithm running, so no ROI
+    is meaningful."""
+    if image is None:
+        return _offline_placeholder(cam_num, ref_shape)
+    if roi is None:
+        return image
+    return _draw_roi(image, roi)
 
 
 def _offline_placeholder(camera_num: int, ref_shape: tuple[int, int] | None = None) -> np.ndarray:
@@ -118,6 +160,8 @@ def compose_frontback(
     image1: np.ndarray | None,
     image2: np.ndarray | None,
     is_front: bool,
+    roi1: dict[str, int] | None = None,
+    roi2: dict[str, int] | None = None,
 ) -> np.ndarray:
     """Build the dual-camera composed BGR image. Pure CPU, no I/O.
 
@@ -126,6 +170,12 @@ def compose_frontback(
     a camera is offline `is_front` is meaningless (the algorithm wasn't
     run), so both panels get the loser-colour bar to avoid implying a
     spurious pass/fail result.
+
+    Optional `roi1` / `roi2`: when supplied, a yellow rectangle is drawn
+    on the corresponding camera image showing the algorithm's region of
+    interest. Lets the operator visually confirm the ROI is positioned
+    over the inspected product. ROI is skipped when its camera is offline
+    (no algorithm running, no ROI to show).
     """
     # Match placeholder dimensions to whichever camera DID capture, so the
     # two panels stay the same size after the 0.4x downscale.
@@ -135,8 +185,8 @@ def compose_frontback(
     elif image2 is not None:
         ref_shape = image2.shape[:2]
 
-    img1 = image1 if image1 is not None else _offline_placeholder(1, ref_shape)
-    img2 = image2 if image2 is not None else _offline_placeholder(2, ref_shape)
+    img1 = _prep_panel_image(image1, roi1, 1, ref_shape)
+    img2 = _prep_panel_image(image2, roi2, 2, ref_shape)
 
     panel1 = _build_panel(img1)
     panel2 = _build_panel(img2)
@@ -202,6 +252,8 @@ def render_frontback(
     is_front: bool,
     png_path: str | Path | None = DEFAULT_PNG_PATH,
     rgb565_path: str | Path | None = DEFAULT_RGB565_PATH,
+    roi1: dict[str, int] | None = None,
+    roi2: dict[str, int] | None = None,
 ) -> np.ndarray:
     """Compose + write to all configured display sinks.
 
@@ -219,8 +271,12 @@ def render_frontback(
     fire (RGB565→ARGB + direct memcpy, no scaling code touched), cutting
     render time roughly 5× at 1080p. On dev machines without a fb the
     composition ships unchanged and image_updater's slow path scales it.
+
+    v0.3.9+: optional `roi1` / `roi2` overlay yellow rectangles on the
+    corresponding camera images, showing where the algorithm's ROI is
+    actually being computed.
     """
-    composed = compose_frontback(image1, image2, is_front)
+    composed = compose_frontback(image1, image2, is_front, roi1=roi1, roi2=roi2)
     composed = _maybe_fit_to_fb(composed)
     _write_sinks(composed, png_path, rgb565_path)
     return composed

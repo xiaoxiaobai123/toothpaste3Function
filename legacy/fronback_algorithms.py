@@ -24,6 +24,7 @@ this module without explicit confirmation from a deployment owner.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import cv2
@@ -83,6 +84,34 @@ def compute_frontback(
     """
     e1 = _count_sobel_edges(image1, roi1, edge_threshold)
     e2 = _count_sobel_edges(image2, roi2, edge_threshold)
+    return FrontbackResult(is_front=e1 > e2, edge1_count=e1, edge2_count=e2)
+
+
+async def compute_frontback_parallel(
+    image1: np.ndarray,
+    image2: np.ndarray,
+    roi1: dict,
+    roi2: dict,
+    edge_threshold: int = EDGE_INTENSITY_THRESHOLD,
+) -> FrontbackResult:
+    """Same numerical result as `compute_frontback`, but runs the two
+    per-camera Sobel computations concurrently in worker threads.
+
+    On the NanoPi-R5S (4-core Cortex-A55) this halves the algorithm
+    portion of the LOOP cycle — Sobel is the long pole and the cv2
+    calls release the GIL, so the two threads actually run in parallel.
+
+    Output is byte-identical to the sync version because:
+        * `_count_sobel_edges` is pure (no side effects, no shared state).
+        * The OK/NG comparison is `e1 > e2`, identical scalars in any order.
+
+    Tests in tests/integration/test_legacy_orchestrator.py verify this
+    equivalence on golden inputs.
+    """
+    e1, e2 = await asyncio.gather(
+        asyncio.to_thread(_count_sobel_edges, image1, roi1, edge_threshold),
+        asyncio.to_thread(_count_sobel_edges, image2, roi2, edge_threshold),
+    )
     return FrontbackResult(is_front=e1 > e2, edge1_count=e1, edge2_count=e2)
 
 

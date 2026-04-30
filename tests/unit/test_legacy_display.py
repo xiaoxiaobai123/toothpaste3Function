@@ -247,6 +247,58 @@ def test_compose_frontback_includes_company_bar_at_top() -> None:
 
 
 # ----------------------------------------------------------------------
+# v0.3.9 — ROI rectangle overlay on cam panels
+# ----------------------------------------------------------------------
+def test_compose_frontback_draws_roi_when_provided() -> None:
+    """When roi1/roi2 are supplied, compose_frontback overlays a yellow
+    rectangle on each cam image before the 0.4× panel resize. Verify by
+    counting yellow-ish pixels in the panel area — a no-ROI baseline has
+    none, the ROI version has many along the rectangle path."""
+    img = _solid(640, 480, (180, 180, 180))  # bright grey
+
+    baseline = compose_frontback(img, img, is_front=True)
+    with_roi = compose_frontback(
+        img, img, is_front=True,
+        roi1={"x1": 100, "y1": 80, "x2": 540, "y2": 400},
+        roi2={"x1": 100, "y1": 80, "x2": 540, "y2": 400},
+    )
+
+    # Yellow in BGR is (0, 255, 255). Count pixels close to this colour
+    # — many on the ROI version, near zero on the baseline.
+    def yellow_pixel_count(img: np.ndarray) -> int:
+        # |B| < 30 AND |G| > 200 AND |R| > 200
+        b, g, r = img[..., 0], img[..., 1], img[..., 2]
+        return int(np.sum((b < 30) & (g > 200) & (r > 200)))
+
+    base_yellow = yellow_pixel_count(baseline)
+    roi_yellow = yellow_pixel_count(with_roi)
+    assert roi_yellow > base_yellow + 100, (
+        f"expected significant yellow pixels for ROI overlay, "
+        f"baseline={base_yellow}, with_roi={roi_yellow}"
+    )
+
+
+def test_compose_frontback_skips_roi_when_camera_offline() -> None:
+    """OFFLINE-camera placeholder doesn't get an ROI rectangle drawn
+    on it — there's no algorithm running so no ROI is meaningful."""
+    img = _solid(640, 480, (180, 180, 180))
+    # cam1 offline, cam2 has ROI
+    composed = compose_frontback(
+        None, img, is_front=False,
+        roi1={"x1": 100, "y1": 80, "x2": 540, "y2": 400},
+        roi2={"x1": 100, "y1": 80, "x2": 540, "y2": 400},
+    )
+    # Test passes simply by not crashing — the offline placeholder for
+    # cam1 should not be passed to _draw_roi (which would mismatch the
+    # placeholder's coordinate system anyway). cam2 still gets its ROI.
+    h, w = composed.shape[:2]
+    right_panel = composed[:, w // 2 + 2 :]
+    b, g, r = right_panel[..., 0], right_panel[..., 1], right_panel[..., 2]
+    yellow = int(np.sum((b < 30) & (g > 200) & (r > 200)))
+    assert yellow > 50, "right panel (cam2 alive) should still show ROI"
+
+
+# ----------------------------------------------------------------------
 # compose_frontback — offline camera handling (one image is None)
 # ----------------------------------------------------------------------
 def test_compose_frontback_handles_missing_cam1() -> None:
