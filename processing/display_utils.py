@@ -89,6 +89,37 @@ def add_company_name(image: np.ndarray) -> np.ndarray:
     return cv2.vconcat([bar, image])
 
 
+def fit_to_framebuffer(image: np.ndarray, fb_size: tuple[int, int]) -> np.ndarray:
+    """Scale `image` to fit `fb_size = (width, height)` exactly, preserving
+    aspect ratio with black letterbox bands on the under-filled axis.
+
+    The result is byte-identical-shape to the framebuffer, so v0.3.8+
+    image_updater takes its NEON fast path: just convert RGB565→ARGB
+    row-by-row and memcpy to /dev/fb0 — no scaling code touched.
+
+    For dev environments without a fb (get_framebuffer_resolution() returns
+    None), call sites should skip this entirely; image_updater on the
+    NanoPi falls back to its scaling path same as pre-v0.3.8.
+    """
+    fb_w, fb_h = fb_size
+    src_h, src_w = image.shape[:2]
+    if src_w == fb_w and src_h == fb_h:
+        return image  # already-sized, no resampling cost
+    scale = min(fb_w / src_w, fb_h / src_h)
+    new_w = max(1, int(src_w * scale))
+    new_h = max(1, int(src_h * scale))
+    # INTER_AREA is OpenCV's recommended down-sampler; it also handles
+    # up-sampling reasonably for the small ratios we hit in practice
+    # (composed cam panels are typically 0.4–0.6× of the fb dimensions).
+    resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+
+    canvas = np.zeros((fb_h, fb_w, 3), dtype=np.uint8)  # black letterbox
+    x_off = (fb_w - new_w) // 2
+    y_off = (fb_h - new_h) // 2
+    canvas[y_off : y_off + new_h, x_off : x_off + new_w] = resized
+    return canvas
+
+
 def combine_images(images: list[np.ndarray]) -> np.ndarray:
     """Side-by-side concat of two camera images with a 10px white divider.
 
@@ -142,7 +173,15 @@ def process_and_combine_images(results: dict[int, object]) -> np.ndarray | None:
             combined = images[0] if images else None
         if combined is None:
             return None
-        return add_company_name(combined)
+        composed = add_company_name(combined)
+        # Optional pre-scale to framebuffer dims so image_updater (v0.3.8+)
+        # takes its NEON fast path. No-op when no /dev/fb0 (dev env, CI).
+        from core.framebuffer import get_framebuffer_resolution
+
+        fb_size = get_framebuffer_resolution()
+        if fb_size is not None:
+            composed = fit_to_framebuffer(composed, fb_size)
+        return composed
     except Exception as e:
         logger.error(f"combine/add_company_name failed: {e}")
         return images[0] if images else None

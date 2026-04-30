@@ -37,13 +37,25 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from core.framebuffer import get_framebuffer_resolution
 from processing.display_utils import (
     add_company_name,
     convert_to_rgb565,
+    fit_to_framebuffer,
     save_rgb565_with_header,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _maybe_fit_to_fb(image: np.ndarray) -> np.ndarray:
+    """Pre-scale to framebuffer dims when /dev/fb0 is detectable; otherwise
+    return the image unchanged. v0.3.8+ image_updater fast-paths the
+    pre-scaled case (NEON RGB565→ARGB + memcpy)."""
+    fb_size = get_framebuffer_resolution()
+    if fb_size is None:
+        return image
+    return fit_to_framebuffer(image, fb_size)
 
 DEFAULT_PNG_PATH = "/tmp/processed_image.png"
 DEFAULT_RGB565_PATH = "/home/pi/output_image.rgb565"
@@ -201,8 +213,15 @@ def render_frontback(
     placeholder so the operator screen still updates with which camera
     dropped. Caller is responsible for skipping algorithm/PLC writes in
     that case (see `LegacyFronbackOrchestrator._do_frontback`).
+
+    v0.3.8+: when /dev/fb0 is detectable, the composition is pre-scaled to
+    match its dimensions exactly. This lets image_updater's NEON fast path
+    fire (RGB565→ARGB + direct memcpy, no scaling code touched), cutting
+    render time roughly 5× at 1080p. On dev machines without a fb the
+    composition ships unchanged and image_updater's slow path scales it.
     """
     composed = compose_frontback(image1, image2, is_front)
+    composed = _maybe_fit_to_fb(composed)
     _write_sinks(composed, png_path, rgb565_path)
     return composed
 
@@ -212,7 +231,12 @@ def render_height(
     png_path: str | Path | None = DEFAULT_PNG_PATH,
     rgb565_path: str | Path | None = DEFAULT_RGB565_PATH,
 ) -> np.ndarray:
-    """Write the raw cam2 frame to display sinks — matches the original height path."""
+    """Write the raw cam2 frame to display sinks — matches the original height path.
+
+    v0.3.8+: pre-scales to /dev/fb0 dims when available (same fast-path
+    optimisation as render_frontback). Pure no-op for tests / dev env.
+    """
+    image = _maybe_fit_to_fb(image)
     _write_sinks(image, png_path, rgb565_path)
     return image
 
