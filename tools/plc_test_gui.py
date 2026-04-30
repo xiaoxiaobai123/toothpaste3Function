@@ -95,6 +95,44 @@ V2_FIRE_LOOP = 11   # CameraStatus.START_LOOP   — continuous capture
 V2_IDLE = 0         # CameraStatus.IDLE         — stops a running loop
 
 
+# Per-ProductType algorithm-parameter defaults — written by the
+# "Apply algorithm defaults" button when the customer's PLC ladder hasn't
+# initialised the v2 register block (typical when testing v2 mode on a
+# NanoPi whose PLC is still programmed for legacy_fronback — D14..D27
+# would otherwise contain garbage from the legacy edge-count writes).
+#
+# Each entry is (offset_from_config_base, value). uint32 fields like
+# roi_area_min/max are pre-split into low+high 16-bit words. Defaults
+# are pulled from the matching DEFAULTS dict in the corresponding
+# processing/<algo>.py module — keep this in sync if those change.
+V2_DEFAULTS: dict[int, list[tuple[int, int]]] = {
+    1: [  # TOOTHPASTE_FRONTBACK — see processing/toothpaste_frontback.py
+        (5, 30),                                  # +5  edge_intensity_threshold
+        (6, 1000 & 0xFFFF), (7, (1000 >> 16) & 0xFFFF),  # +6-7  front_count_threshold (uint32)
+        (8, 100 & 0xFFFF),  (9, (100 >> 16) & 0xFFFF),   # +8-9  back_count_threshold (uint32)
+        (10, 0), (11, 0), (12, 0), (13, 0),       # +10-13 roi (0 = full frame)
+    ],
+    2: [  # HEIGHT_CHECK — see processing/height_check.py
+        (5, 2),     # +5  channel = 2 (B)
+        (6, 100),   # +6  pixel_threshold
+        (7, 100),   # +7  min_height
+        (8, 300),   # +8  decision_threshold
+        (9, 0), (10, 0), (11, 0), (12, 0),       # +9-12 roi (0 = full frame)
+    ],
+    3: [  # BRUSH_HEAD — see processing/brush_head.py
+        (5, 15),    # +5  shrink_pct
+        (6, 31),    # +6  adapt_block
+        (7, 8),     # +7  adapt_C
+        (8, 20),    # +8  dot_area_min
+        (9, 500),   # +9  dot_area_max
+        (10, 50000 & 0xFFFF),  (11, (50000 >> 16) & 0xFFFF),   # +10-11 roi_area_min (uint32)
+        (12, 500000 & 0xFFFF), (13, (500000 >> 16) & 0xFFFF),  # +12-13 roi_area_max (uint32)
+        (14, 15),   # +14 roi_ratio_min × 10  (= 1.5)
+        (15, 35),   # +15 roi_ratio_max × 10  (= 3.5)
+    ],
+}
+
+
 # --------------------------------------------------------------------------- #
 # Modbus client (used by both CLI and GUI; supports both protocols)
 # --------------------------------------------------------------------------- #
@@ -188,6 +226,23 @@ class PLC:
         addr = V2_CAM1_STATUS if camera_num == 1 else V2_CAM2_STATUS
         with self._lock:
             self.client.write_single_register(addr, V2_IDLE)
+
+    def v2_apply_defaults(self, camera_num: int, product_type: int) -> int:
+        """Write the algorithm-default parameters for `product_type` into the
+        camera's 18-word config block. Returns the number of registers written.
+
+        Use case: testing v2 mode on a NanoPi whose PLC ladder is still
+        programmed for a different protocol (typically legacy_fronback —
+        in which case D15..D27 contain garbage from edge counts etc., and
+        the v2 algorithm rejects the bogus parameters)."""
+        if product_type not in V2_DEFAULTS:
+            return 0
+        config_base = V2_CAM1_CONFIG_START if camera_num == 1 else V2_CAM2_CONFIG_START
+        writes = V2_DEFAULTS[product_type]
+        with self._lock:
+            for offset, value in writes:
+                self.client.write_single_register(config_base + offset, value)
+        return len(writes)
 
 
 # --------------------------------------------------------------------------- #
@@ -468,6 +523,17 @@ class PLCTesterGUI:
         )
         self.v2_stop_btn.pack(pady=2, fill="x")
 
+        # Test-convenience button: writes the algorithm's DEFAULTS into the
+        # selected camera's 18-word config block. Necessary when testing v2
+        # mode against a PLC whose ladder doesn't initialise the v2 register
+        # block — without it, garbage values from the previous protocol
+        # cause false NG ("ROI area outside [...]") on every fire.
+        self.v2_defaults_btn = ttk.Button(
+            fire_frame, text="Apply algorithm defaults\n(test-only)",
+            command=self._apply_v2_defaults, width=22,
+        )
+        self.v2_defaults_btn.pack(pady=(8, 2), fill="x")
+
         # Per-camera state panels (side by side)
         state_frame = ttk.Frame(parent)
         state_frame.pack(fill="both", padx=4, pady=4, expand=True)
@@ -681,6 +747,38 @@ class PLCTesterGUI:
         except Exception as exc:
             self._log(f"  [v2 STOP] error: {exc}")
             return
+        self._refresh_status()
+
+    def _apply_v2_defaults(self) -> None:
+        """Write the selected ProductType's default algorithm parameters into
+        the selected camera's 18-word config block.
+
+        Test-only — production deployments have the PLC ladder writing these
+        values. This button is for the "v2 binary on legacy PLC" debug case
+        where D15..D27 contain garbage from the previous protocol's writes.
+        """
+        if self.plc is None:
+            messagebox.showwarning("Not connected", "Connect to the PLC first.")
+            return
+        cam = self.v2_camera.get()
+        pt = self.v2_product_type.get()
+        pt_name = V2_PRODUCT_NAMES.get(pt, str(pt))
+        if pt not in V2_DEFAULTS:
+            self._log(f"[v2 defaults] no defaults table for ProductType {pt} ({pt_name})")
+            return
+        config_base = V2_CAM1_CONFIG_START if cam == 1 else V2_CAM2_CONFIG_START
+        first_off = V2_DEFAULTS[pt][0][0]
+        last_off = V2_DEFAULTS[pt][-1][0]
+        self._log(
+            f"[v2 defaults] writing {pt_name} defaults to cam{cam} "
+            f"(D{config_base + first_off}..D{config_base + last_off})"
+        )
+        try:
+            n = self.plc.v2_apply_defaults(cam, pt)
+        except Exception as exc:
+            self._log(f"  [v2 defaults] error: {exc}")
+            return
+        self._log(f"  -> wrote {n} registers. Now click FIRE to test with sane params.")
         self._refresh_status()
 
     # ---------------- shared handshake polling ----------------
