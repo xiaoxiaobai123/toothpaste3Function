@@ -19,6 +19,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any
 
+from core.log_throttle import LogThrottle
 from plc.enums import (
     CameraResult,
     CameraStatus,
@@ -64,6 +65,11 @@ class TaskManager:
         self.camera_manager = camera_manager
         self.config = config
         self.logger = logger
+        # Throttled wrapper for the hot async loops — same persistent fault
+        # (PLC unreachable, protocol mismatch, camera offline) would otherwise
+        # spam my_app.log at ~10 lines/s and rotate real signal out within
+        # seconds. See core/log_throttle.py.
+        self.throttled = LogThrottle(logger)
 
         active = camera_manager.active_camera_nums() if camera_manager else [1, 2]
         # Only allocate slots for cameras that actually came up.
@@ -87,7 +93,8 @@ class TaskManager:
             try:
                 await self.process_camera(camera_num)
             except Exception as e:
-                self.logger.error(f"[Cam{camera_num}] task loop exception: {e}")
+                # Throttled — same exception per-iteration would flood the log.
+                self.throttled.error(f"[Cam{camera_num}] task loop exception: {e}")
             await asyncio.sleep(0.1)
 
     async def process_camera(self, camera_num: int) -> None:
@@ -142,7 +149,11 @@ class TaskManager:
         try:
             return await asyncio.to_thread(self.plc_manager.read_camera_settings, camera_num)
         except Exception as e:
-            self.logger.error(f"[Cam{camera_num}] PLC read exception: {e}")
+            # Throttled — same error fires every poll cycle when PLC is
+            # unreachable or values are out of expected enum range (e.g.
+            # "5000 is not a valid CameraTriggerStatus" when v2 binary is
+            # pointed at a legacy PLC's exposure word). Burst then summary.
+            self.throttled.error(f"[Cam{camera_num}] PLC read exception: {e}")
             return {}
 
     # ------------------------------------------------------------------
@@ -227,7 +238,8 @@ class TaskManager:
                 await asyncio.sleep(0.01)
 
             except Exception as e:
-                self.logger.error(f"[Cam{camera_num}] continuous capture exception: {e}")
+                # Throttled — same exception per-iteration would flood the log.
+                self.throttled.error(f"[Cam{camera_num}] continuous capture exception: {e}")
                 await asyncio.sleep(1)
 
         total_run = time.time() - loop_start

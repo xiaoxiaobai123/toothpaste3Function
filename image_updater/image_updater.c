@@ -40,19 +40,14 @@ double get_elapsed_time(struct timespec start, struct timespec end) {
 }
 
 int load_rgb565(const char *filename, unsigned char **image, size_t *size, int *width, int *height) {
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-
+    /* Per-event timing prints removed — at PLC trigger rates this floods
+     * journald. Errors are still printed, and the main loop emits one
+     * heartbeat line per minute summarising activity. */
     int fd = open(filename, O_RDONLY);
     if (fd == -1) {
         perror("Error opening file");
         return -1;
     }
-
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    printf("Opening file took %.3f seconds\n", get_elapsed_time(start, end));
-
-    clock_gettime(CLOCK_MONOTONIC, &start);
 
     struct stat st;
     if (fstat(fd, &st) == -1) {
@@ -61,23 +56,17 @@ int load_rgb565(const char *filename, unsigned char **image, size_t *size, int *
         return -1;
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    printf("Getting file size took %.3f seconds\n", get_elapsed_time(start, end));
-    printf("File size: %ld bytes\n", st.st_size);
-
-    clock_gettime(CLOCK_MONOTONIC, &start);
-
     if (read(fd, width, sizeof(int)) != sizeof(int) || read(fd, height, sizeof(int)) != sizeof(int)) {
         perror("Error reading width/height");
         close(fd);
         return -1;
     }
-    printf("Image width: %d, height: %d\n", *width, *height);
 
     *size = st.st_size - 2 * sizeof(int);
 
     if (*size != (*width) * (*height) * 2) {
-        fprintf(stderr, "File size mismatch: expected %d, got %zu\n", (*width) * (*height) * 2, *size);
+        fprintf(stderr, "File size mismatch: expected %d, got %zu (file=%ld w=%d h=%d)\n",
+                (*width) * (*height) * 2, *size, st.st_size, *width, *height);
         close(fd);
         return -1;
     }
@@ -103,9 +92,6 @@ int load_rgb565(const char *filename, unsigned char **image, size_t *size, int *
         return -1;
     }
 
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    printf("Reading file took %.3f seconds\n", get_elapsed_time(start, end));
-
     close(fd);
     return 0;
 }
@@ -120,9 +106,6 @@ void clear_screen(unsigned char *fbp, int screen_width, int screen_height, int l
 
  
 void draw_image(unsigned char *fbp, unsigned char *image, int src_width, int src_height, int dst_width, int dst_height, int line_length) {
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-
     // 计算原始图像的宽高比
     float aspect_ratio = (float)src_width / src_height;
 
@@ -192,30 +175,18 @@ void draw_image(unsigned char *fbp, unsigned char *image, int src_width, int src
             dst_row[x] = 0xFFA500FF; // ARGB 格式
         }
     }
-
-    clock_gettime(CLOCK_MONOTONIC, &end);
-    printf("Drawing image took %.3f seconds\n", get_elapsed_time(start, end));
 }
 
 void* update_image(void *args) {
-    struct timespec start, end;
-    clock_gettime(CLOCK_MONOTONIC, &start);
-
     ThreadArgs *threadArgs = (ThreadArgs *) args;
     unsigned char *image;
     size_t size;
     int width, height;
 
     if (load_rgb565(threadArgs->filename, &image, &size, &width, &height) == 0) {
-        clock_gettime(CLOCK_MONOTONIC, &end);
-        printf("Loading image took %.3f seconds\n", get_elapsed_time(start, end));
-        printf("Loaded image size: %zu bytes, Expected image size: %ld bytes\n", size, threadArgs->screensize);
-
-        clock_gettime(CLOCK_MONOTONIC, &start);
-        draw_image(threadArgs->fbp, image, width, height, threadArgs->vinfo.xres, threadArgs->vinfo.yres, threadArgs->finfo.line_length);
-        clock_gettime(CLOCK_MONOTONIC, &end);
-        printf("Total drawing time: %.3f seconds\n", get_elapsed_time(start, end));
-
+        draw_image(threadArgs->fbp, image, width, height,
+                   threadArgs->vinfo.xres, threadArgs->vinfo.yres,
+                   threadArgs->finfo.line_length);
         free(image);
     }
     return NULL;
@@ -232,7 +203,7 @@ int main(int argc, char **argv) {
     char *fbp = 0;
     char buffer[BUF_LEN];
 
-    struct timespec start, end, last_trigger, current_trigger;
+    struct timespec start, end, current_trigger;
     clock_gettime(CLOCK_MONOTONIC, &start);
     
     inotifyFd = inotify_init();
@@ -284,33 +255,40 @@ int main(int argc, char **argv) {
     ThreadArgs args = {image_file, fbp, vinfo, finfo, screensize};
     pthread_t thread_id;
 
-    clock_gettime(CLOCK_MONOTONIC, &last_trigger);
+    /* Heartbeat: emit one summary line per minute so operators can confirm
+     * the renderer is alive without scrolling through per-frame spam. */
+    int frame_count = 0;
+    struct timespec last_heartbeat;
+    clock_gettime(CLOCK_MONOTONIC, &last_heartbeat);
 
     printf("Entering main loop, waiting for file events...\n");
+    fflush(stdout);
 
     while (1) {
-        printf("Waiting for inotify events...\n");
         int length = read(inotifyFd, buffer, BUF_LEN);
         if (length < 0) {
             perror("read");
             break;
         }
 
-        printf("Read %d bytes from inotify file descriptor\n", length);
-
         for (int i = 0; i < length; i += EVENT_SIZE + ((struct inotify_event*)&buffer[i])->len) {
             struct inotify_event *event = (struct inotify_event*)&buffer[i];
             if (event->mask & IN_CLOSE_WRITE) {
                 clock_gettime(CLOCK_MONOTONIC, &current_trigger);
-                printf("Detected file modification, updating image...\n");
-                printf("Time since last trigger: %.3f seconds\n", get_elapsed_time(last_trigger, current_trigger));
-                last_trigger = current_trigger;
 
-                clock_gettime(CLOCK_MONOTONIC, &start);
                 pthread_create(&thread_id, NULL, update_image, &args);
-                clock_gettime(CLOCK_MONOTONIC, &end);
-                printf("Trigger time: %.3f seconds\n", get_elapsed_time(start, end));
                 pthread_detach(thread_id);
+                frame_count++;
+
+                /* One log line per minute, not per frame. */
+                double since_hb = get_elapsed_time(last_heartbeat, current_trigger);
+                if (since_hb >= 60.0) {
+                    printf("[heartbeat] rendered %d frames in last %.0fs\n",
+                           frame_count, since_hb);
+                    fflush(stdout);
+                    frame_count = 0;
+                    last_heartbeat = current_trigger;
+                }
             }
         }
     }

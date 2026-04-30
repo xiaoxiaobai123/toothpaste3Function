@@ -30,6 +30,7 @@ from typing import Any
 
 import numpy as np
 
+from core.log_throttle import LogThrottle
 from legacy.fronback_algorithms import compute_frontback, compute_height
 from legacy.fronback_display import (
     DEFAULT_PNG_PATH,
@@ -123,6 +124,10 @@ class LegacyFronbackOrchestrator:
         self.cam = camera_manager
         self.get_roi = roi_provider
         self.logger = logger
+        # Throttled wrapper for the 50 ms poll loop — see core/log_throttle.py.
+        # The orchestrator's main `while True` would otherwise log the same
+        # PLC/camera fault 20×/s when something's broken upstream.
+        self.throttled = LogThrottle(logger)
         # Either path may be None to disable that sink (e.g., test harnesses
         # that don't want to touch /tmp or /home/pi).
         self.png_path = str(png_path) if png_path is not None else None
@@ -150,7 +155,8 @@ class LegacyFronbackOrchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.logger.error(f"[Legacy] loop exception: {e}")
+                # Throttled — same exception per-iteration would flood the log.
+                self.throttled.error(f"[Legacy] loop exception: {e}")
                 await asyncio.sleep(1.0)
             await asyncio.sleep(POLL_INTERVAL_S)
 
