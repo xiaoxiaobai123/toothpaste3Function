@@ -58,7 +58,7 @@ D35_HEIGHT_COMP = 35
 D40_HEIGHT_RESULT = 40
 
 LEGACY_TRIGGER_FIRE, LEGACY_TRIGGER_IDLE, LEGACY_TRIGGER_DONE = 10, 0, 1
-LEGACY_TRIGGER_LOOP = 11   # extension shipped in legacy v0.3.6+
+LEGACY_TRIGGER_LOOP = 11  # extension shipped in legacy v0.3.6+
 LEGACY_MODE_HEIGHT, LEGACY_MODE_FRONTBACK = 0, 1
 
 
@@ -66,15 +66,15 @@ LEGACY_MODE_HEIGHT, LEGACY_MODE_FRONTBACK = 0, 1
 # Per-camera config block is 18 words. cam1 starts at D10, cam2 at D30.
 # Within each block:
 #   +0 trigger, +1 exposure, +2-3 pixel_distance(f32), +4 product_type, +5..+17 algo params
-V2_CAM1_STATUS = 1     # D1 — same address as legacy D1 but the values mean different things:
-V2_CAM2_STATUS = 2     # D2 — see CameraStatus enum (0 IDLE, 3 TASK_COMPLETED, 10 START_TASK)
+V2_CAM1_STATUS = 1  # D1 — same address as legacy D1 but the values mean different things:
+V2_CAM2_STATUS = 2  # D2 — see CameraStatus enum (0 IDLE, 3 TASK_COMPLETED, 10 START_TASK)
 V2_CAM1_CONFIG_START = 10  # D10..D27
 V2_CAM2_CONFIG_START = 30  # D30..D47
-V2_CAM1_RESULT = 82    # D82 (1 word: 1=OK, 2=NG)
-V2_CAM2_RESULT = 102   # D102
+V2_CAM1_RESULT = 82  # D82 (1 word: 1=OK, 2=NG)
+V2_CAM2_RESULT = 102  # D102
 V2_CAM1_OUTPUT_X = 70  # D70-73 (double, 4 words)
 V2_CAM1_OUTPUT_Y = 74  # D74-77
-V2_CAM1_AREA = 83      # D83-84 (uint32, 2 words)
+V2_CAM1_AREA = 83  # D83-84 (uint32, 2 words)
 V2_CAM2_OUTPUT_X = 90
 V2_CAM2_OUTPUT_Y = 94
 V2_CAM2_AREA = 103
@@ -89,15 +89,22 @@ V2_OFFSET_EXPOSURE = 1
 V2_OFFSET_PRODUCT_TYPE = 4
 
 V2_STATUS_NAMES = {
-    0: "IDLE", 1: "READING_DATA", 2: "PROCESSING_DATA",
-    3: "TASK_COMPLETED", 10: "START_TASK", 11: "START_LOOP",
+    0: "IDLE",
+    1: "READING_DATA",
+    2: "PROCESSING_DATA",
+    3: "TASK_COMPLETED",
+    10: "START_TASK",
+    11: "START_LOOP",
 }
 V2_PRODUCT_NAMES = {
-    0: "NONE", 1: "TOOTHPASTE_FRONTBACK", 2: "HEIGHT_CHECK", 3: "BRUSH_HEAD",
+    0: "NONE",
+    1: "TOOTHPASTE_FRONTBACK",
+    2: "HEIGHT_CHECK",
+    3: "BRUSH_HEAD",
 }
-V2_FIRE = 10        # CameraStatus.START_TASK   — single capture
-V2_FIRE_LOOP = 11   # CameraStatus.START_LOOP   — continuous capture
-V2_IDLE = 0         # CameraStatus.IDLE         — stops a running loop
+V2_FIRE = 10  # CameraStatus.START_TASK   — single capture
+V2_FIRE_LOOP = 11  # CameraStatus.START_LOOP   — continuous capture
+V2_IDLE = 0  # CameraStatus.IDLE         — stops a running loop
 
 
 # Per-ProductType algorithm-parameter defaults — written by the
@@ -112,28 +119,38 @@ V2_IDLE = 0         # CameraStatus.IDLE         — stops a running loop
 # processing/<algo>.py module — keep this in sync if those change.
 V2_DEFAULTS: dict[int, list[tuple[int, int]]] = {
     1: [  # TOOTHPASTE_FRONTBACK — see processing/toothpaste_frontback.py
-        (5, 30),                                  # +5  edge_intensity_threshold
-        (6, 1000 & 0xFFFF), (7, (1000 >> 16) & 0xFFFF),  # +6-7  front_count_threshold (uint32)
-        (8, 100 & 0xFFFF),  (9, (100 >> 16) & 0xFFFF),   # +8-9  back_count_threshold (uint32)
-        (10, 0), (11, 0), (12, 0), (13, 0),       # +10-13 roi (0 = full frame)
+        (5, 30),  # +5  edge_intensity_threshold
+        (6, 1000 & 0xFFFF),
+        (7, (1000 >> 16) & 0xFFFF),  # +6-7  front_count_threshold (uint32)
+        (8, 100 & 0xFFFF),
+        (9, (100 >> 16) & 0xFFFF),  # +8-9  back_count_threshold (uint32)
+        (10, 0),
+        (11, 0),
+        (12, 0),
+        (13, 0),  # +10-13 roi (0 = full frame)
     ],
     2: [  # HEIGHT_CHECK — see processing/height_check.py
-        (5, 2),     # +5  channel = 2 (B)
-        (6, 100),   # +6  pixel_threshold
-        (7, 100),   # +7  min_height
-        (8, 300),   # +8  decision_threshold
-        (9, 0), (10, 0), (11, 0), (12, 0),       # +9-12 roi (0 = full frame)
+        (5, 2),  # +5  channel = 2 (B)
+        (6, 100),  # +6  pixel_threshold
+        (7, 100),  # +7  min_height
+        (8, 300),  # +8  decision_threshold
+        (9, 0),
+        (10, 0),
+        (11, 0),
+        (12, 0),  # +9-12 roi (0 = full frame)
     ],
     3: [  # BRUSH_HEAD — see processing/brush_head.py
-        (5, 15),    # +5  shrink_pct
-        (6, 31),    # +6  adapt_block
-        (7, 8),     # +7  adapt_C
-        (8, 20),    # +8  dot_area_min
-        (9, 500),   # +9  dot_area_max
-        (10, 50000 & 0xFFFF),  (11, (50000 >> 16) & 0xFFFF),   # +10-11 roi_area_min (uint32)
-        (12, 500000 & 0xFFFF), (13, (500000 >> 16) & 0xFFFF),  # +12-13 roi_area_max (uint32)
-        (14, 15),   # +14 roi_ratio_min × 10  (= 1.5)
-        (15, 35),   # +15 roi_ratio_max × 10  (= 3.5)
+        (5, 15),  # +5  shrink_pct
+        (6, 31),  # +6  adapt_block
+        (7, 8),  # +7  adapt_C
+        (8, 20),  # +8  dot_area_min
+        (9, 500),  # +9  dot_area_max
+        (10, 50000 & 0xFFFF),
+        (11, (50000 >> 16) & 0xFFFF),  # +10-11 roi_area_min (uint32)
+        (12, 500000 & 0xFFFF),
+        (13, (500000 >> 16) & 0xFFFF),  # +12-13 roi_area_max (uint32)
+        (14, 15),  # +14 roi_ratio_min × 10  (= 1.5)
+        (15, 35),  # +15 roi_ratio_max × 10  (= 3.5)
     ],
 }
 
@@ -261,9 +278,7 @@ class PLC:
             n += 4
         return n
 
-    def v2_set_brush_manual_roi(
-        self, camera_num: int, x1: int, y1: int, x2: int, y2: int
-    ) -> None:
+    def v2_set_brush_manual_roi(self, camera_num: int, x1: int, y1: int, x2: int, y2: int) -> None:
         """Write 4 words to the BRUSH_HEAD manual-pre-crop ROI extension block.
 
         Set (0,0,0,0) to disable manual ROI (= auto-detect on full frame).
@@ -424,8 +439,10 @@ class PLCTesterGUI:
         self.conn_status.pack(side="left", padx=8)
 
         ttk.Checkbutton(
-            frame, text="Auto-refresh state every 1s",
-            variable=self.auto_poll, command=self._on_auto_poll_toggle,
+            frame,
+            text="Auto-refresh state every 1s",
+            variable=self.auto_poll,
+            command=self._on_auto_poll_toggle,
         ).pack(side="right", padx=8)
 
     def _build_notebook(self) -> None:
@@ -446,14 +463,16 @@ class PLCTesterGUI:
         single.pack(fill="x", padx=4, pady=2)
 
         self.legacy_fb_btn = ttk.Button(
-            single, text="FIRE FRONTBACK  (D2=1, dual-cam)",
+            single,
+            text="FIRE FRONTBACK  (D2=1, dual-cam)",
             command=lambda: self._fire_legacy(LEGACY_MODE_FRONTBACK, "FRONTBACK / 正反"),
             width=34,
         )
         self.legacy_fb_btn.pack(side="left", padx=4, pady=4)
 
         self.legacy_height_btn = ttk.Button(
-            single, text="FIRE HEIGHT  (D2=0, cam2 only)",
+            single,
+            text="FIRE HEIGHT  (D2=0, cam2 only)",
             command=lambda: self._fire_legacy(LEGACY_MODE_HEIGHT, "HEIGHT / 高度"),
             width=34,
         )
@@ -469,21 +488,24 @@ class PLCTesterGUI:
         loop.pack(fill="x", padx=4, pady=2)
 
         self.legacy_loop_fb_btn = ttk.Button(
-            loop, text="LOOP FRONTBACK  (D2=1, D1=11)",
+            loop,
+            text="LOOP FRONTBACK  (D2=1, D1=11)",
             command=lambda: self._loop_legacy(LEGACY_MODE_FRONTBACK, "LOOP FRONTBACK"),
             width=28,
         )
         self.legacy_loop_fb_btn.pack(side="left", padx=4, pady=4)
 
         self.legacy_loop_height_btn = ttk.Button(
-            loop, text="LOOP HEIGHT  (D2=0, D1=11)",
+            loop,
+            text="LOOP HEIGHT  (D2=0, D1=11)",
             command=lambda: self._loop_legacy(LEGACY_MODE_HEIGHT, "LOOP HEIGHT"),
             width=28,
         )
         self.legacy_loop_height_btn.pack(side="left", padx=4, pady=4)
 
         self.legacy_stop_btn = ttk.Button(
-            loop, text="STOP LOOP  (D1=0)",
+            loop,
+            text="STOP LOOP  (D1=0)",
             command=self._stop_legacy_loop,
             width=20,
         )
@@ -510,14 +532,18 @@ class PLCTesterGUI:
         ]
         for i, (key, hint) in enumerate(labels):
             ttk.Label(status, text=key + ":", width=24).grid(row=i, column=0, sticky="w")
-            value_lbl = ttk.Label(status, text="—", width=14, foreground="blue", font=("Consolas", 10, "bold"))
+            value_lbl = ttk.Label(
+                status, text="—", width=14, foreground="blue", font=("Consolas", 10, "bold")
+            )
             value_lbl.grid(row=i, column=1, sticky="w")
             self.legacy_status_labels[key] = value_lbl
             ttk.Label(status, text=hint, foreground="gray").grid(row=i, column=2, sticky="w")
 
     def _build_v2_tab(self, parent: ttk.Frame) -> None:
         # Selector + fire
-        ctrl = ttk.LabelFrame(parent, text="Trigger (writes D14/D34 ProductType + D1/D2 START_TASK)", padding=6)
+        ctrl = ttk.LabelFrame(
+            parent, text="Trigger (writes D14/D34 ProductType + D1/D2 START_TASK)", padding=6
+        )
         ctrl.pack(fill="x", padx=4, pady=4)
 
         # Camera radio buttons
@@ -533,28 +559,36 @@ class PLCTesterGUI:
         ttk.Label(pt_frame, text="ProductType:").pack(anchor="w")
         for value, name in [(1, "TOOTHPASTE_FRONTBACK"), (2, "HEIGHT_CHECK"), (3, "BRUSH_HEAD")]:
             ttk.Radiobutton(
-                pt_frame, text=f"{name} ({value})",
-                variable=self.v2_product_type, value=value,
+                pt_frame,
+                text=f"{name} ({value})",
+                variable=self.v2_product_type,
+                value=value,
             ).pack(anchor="w")
 
         # Fire / Loop / Stop buttons (vertical stack)
         fire_frame = ttk.Frame(ctrl)
         fire_frame.pack(side="left", padx=20, fill="y")
         self.v2_fire_btn = ttk.Button(
-            fire_frame, text="FIRE SINGLE\n(D=10, START_TASK)",
-            command=self._fire_v2, width=22,
+            fire_frame,
+            text="FIRE SINGLE\n(D=10, START_TASK)",
+            command=self._fire_v2,
+            width=22,
         )
         self.v2_fire_btn.pack(pady=2, fill="x")
 
         self.v2_fire_loop_btn = ttk.Button(
-            fire_frame, text="FIRE LOOP\n(D=11, START_LOOP)",
-            command=self._fire_v2_loop, width=22,
+            fire_frame,
+            text="FIRE LOOP\n(D=11, START_LOOP)",
+            command=self._fire_v2_loop,
+            width=22,
         )
         self.v2_fire_loop_btn.pack(pady=2, fill="x")
 
         self.v2_stop_btn = ttk.Button(
-            fire_frame, text="STOP LOOP\n(D=0, IDLE)",
-            command=self._stop_v2, width=22,
+            fire_frame,
+            text="STOP LOOP\n(D=0, IDLE)",
+            command=self._stop_v2,
+            width=22,
         )
         self.v2_stop_btn.pack(pady=2, fill="x")
 
@@ -564,8 +598,10 @@ class PLCTesterGUI:
         # block — without it, garbage values from the previous protocol
         # cause false NG ("ROI area outside [...]") on every fire.
         self.v2_defaults_btn = ttk.Button(
-            fire_frame, text="Apply algorithm defaults\n(test-only)",
-            command=self._apply_v2_defaults, width=22,
+            fire_frame,
+            text="Apply algorithm defaults\n(test-only)",
+            command=self._apply_v2_defaults,
+            width=22,
         )
         self.v2_defaults_btn.pack(pady=(8, 2), fill="x")
 
@@ -574,14 +610,18 @@ class PLCTesterGUI:
         # ProductType=BRUSH_HEAD. Center-60% writes a sane default; Clear
         # zeros the extension regs to restore auto-detect behaviour.
         self.v2_manual_center_btn = ttk.Button(
-            fire_frame, text="BRUSH manual ROI:\ncenter 60%",
-            command=self._set_brush_manual_roi_center, width=22,
+            fire_frame,
+            text="BRUSH manual ROI:\ncenter 60%",
+            command=self._set_brush_manual_roi_center,
+            width=22,
         )
         self.v2_manual_center_btn.pack(pady=(8, 2), fill="x")
 
         self.v2_manual_clear_btn = ttk.Button(
-            fire_frame, text="BRUSH manual ROI:\nclear (auto-detect)",
-            command=self._clear_brush_manual_roi, width=22,
+            fire_frame,
+            text="BRUSH manual ROI:\nclear (auto-detect)",
+            command=self._clear_brush_manual_roi,
+            width=22,
         )
         self.v2_manual_clear_btn.pack(pady=2, fill="x")
 
@@ -708,8 +748,10 @@ class PLCTesterGUI:
         except Exception as exc:
             self._log(f"  [legacy LOOP] error: {exc}")
             return
-        self._log("  -> orchestrator now running LOOP. Click STOP LOOP to halt. "
-                  "(Requires binary v0.3.6+; older builds silently ignore D1=11.)")
+        self._log(
+            "  -> orchestrator now running LOOP. Click STOP LOOP to halt. "
+            "(Requires binary v0.3.6+; older builds silently ignore D1=11.)"
+        )
         self._refresh_status()
 
     def _stop_legacy_loop(self) -> None:
@@ -737,8 +779,7 @@ class PLCTesterGUI:
         config_base = V2_CAM1_CONFIG_START if cam == 1 else V2_CAM2_CONFIG_START
         status_addr = V2_CAM1_STATUS if cam == 1 else V2_CAM2_STATUS
         self._log(
-            f"[v2] firing cam{cam} {pt_name}: "
-            f"D{config_base + V2_OFFSET_PRODUCT_TYPE}={pt}, D{status_addr}=10"
+            f"[v2] firing cam{cam} {pt_name}: D{config_base + V2_OFFSET_PRODUCT_TYPE}={pt}, D{status_addr}=10"
         )
         self.v2_fire_btn.config(state="disabled")
         threading.Thread(target=self._fire_v2_worker, args=(cam, pt), daemon=True).start()
@@ -781,8 +822,10 @@ class PLCTesterGUI:
         except Exception as exc:
             self._log(f"  [v2 LOOP] start error: {exc}")
             return
-        self._log("  -> orchestrator now running continuously. Click STOP LOOP to halt. "
-                  "Enable Auto-refresh to see live state.")
+        self._log(
+            "  -> orchestrator now running continuously. Click STOP LOOP to halt. "
+            "Enable Auto-refresh to see live state."
+        )
         self._refresh_status()
 
     def _stop_v2(self) -> None:
@@ -898,7 +941,9 @@ class PLCTesterGUI:
         if not saw_ack:
             self.queue.put(("log", f"  [{tag}] X NEVER GOT ACK — orchestrator down or wrong protocol?"))
         else:
-            self.queue.put(("log", f"  [{tag}] X ACK seen but never DONE — algorithm hung; check ~/my_app.log"))
+            self.queue.put(
+                ("log", f"  [{tag}] X ACK seen but never DONE — algorithm hung; check ~/my_app.log")
+            )
 
     # ---------------- status refresh ----------------
 
@@ -947,8 +992,12 @@ class PLCTesterGUI:
             self._set_v2(cam, "status", f"{status}  {V2_STATUS_NAMES.get(status, '?')}")
             self._set_v2(cam, "exposure (us)", f"{exposure}")
             self._set_v2(cam, "product_type", f"{product_type}  {V2_PRODUCT_NAMES.get(product_type, '?')}")
-            self._set_v2(cam, "result", f"{result}  {'OK' if result == 1 else 'NG' if result == 2 else '?'}",
-                         color=("green" if result == 1 else "red" if result == 2 else "blue"))
+            self._set_v2(
+                cam,
+                "result",
+                f"{result}  {'OK' if result == 1 else 'NG' if result == 2 else '?'}",
+                color=("green" if result == 1 else "red" if result == 2 else "blue"),
+            )
             self._set_v2(cam, "output_x", f"{x_val:.4f}")
             self._set_v2(cam, "output_y", f"{y_val:.4f}")
             self._set_v2(cam, "area", str(area))
@@ -1005,7 +1054,9 @@ def main() -> None:
     p.add_argument("--plc", default="192.168.1.10", help="PLC IP")
     p.add_argument("--port", type=int, default=502)
     p.add_argument(
-        "command", nargs="?", default="gui",
+        "command",
+        nargs="?",
+        default="gui",
         choices=["gui", "status", "frontback", "height", "watch"],
         help="default: gui",
     )

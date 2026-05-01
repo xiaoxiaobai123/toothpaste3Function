@@ -116,21 +116,21 @@ def test_distinct_messages_track_independently(captured) -> None:
         throttle.error("error B")
 
     msgs = [m for _, m in handler.records]
-    assert msgs.count("error A") == 3   # burst hit
-    assert msgs.count("error B") == 2   # under burst, all logged
+    assert msgs.count("error A") == 3  # burst hit
+    assert msgs.count("error B") == 2  # under burst, all logged
 
 
 def test_max_keys_lru_eviction(captured) -> None:
     logger, handler = captured
     throttle = LogThrottle(logger, burst=3, summary_interval_s=60.0, max_keys=2)
 
-    throttle.error("a")     # state: {a}
-    throttle.error("b")     # state: {a, b}
-    throttle.error("c")     # state: {b, c}, "a" evicted
-    throttle.error("a")     # treated as new (evicted), so re-logs
+    throttle.error("a")  # state: {a}
+    throttle.error("b")  # state: {a, b}
+    throttle.error("c")  # state: {b, c}, "a" evicted
+    throttle.error("a")  # treated as new (evicted), so re-logs
 
     msgs = [m for _, m in handler.records]
-    assert msgs.count("a") == 2    # logged twice (initial + re-after-eviction)
+    assert msgs.count("a") == 2  # logged twice (initial + re-after-eviction)
     assert msgs.count("b") == 1
     assert msgs.count("c") == 1
 

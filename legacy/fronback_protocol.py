@@ -164,11 +164,11 @@ class BrushHeadSettings:
     cover both modes without a separate request.
     """
 
-    cam1_exposure: int       # D10
-    dot_area_min: int        # D12 (raw uint16; 0 = default)
-    dot_area_max: int        # D13
-    ratio_min_x10: int       # D14 (15 = ratio 1.5)
-    ratio_max_x10: int       # D15
+    cam1_exposure: int  # D10
+    dot_area_min: int  # D12 (raw uint16; 0 = default)
+    dot_area_max: int  # D13
+    ratio_min_x10: int  # D14 (15 = ratio 1.5)
+    ratio_max_x10: int  # D15
 
 
 @dataclass(frozen=True)
@@ -246,14 +246,14 @@ class LegacyFronbackPLC:
         if not isinstance(words, list) or len(words) < 15:
             return None
         return LoopBlock(
-            trigger=words[0],                 # D1
-            mode=words[1],                    # D2
-            cam1_exposure=words[9],           # D10
-            cam2_exposure=words[10],          # D11
-            brush_dot_area_min=words[11],     # D12
-            brush_dot_area_max=words[12],     # D13
-            brush_ratio_min_x10=words[13],    # D14
-            brush_ratio_max_x10=words[14],    # D15
+            trigger=words[0],  # D1
+            mode=words[1],  # D2
+            cam1_exposure=words[9],  # D10
+            cam2_exposure=words[10],  # D11
+            brush_dot_area_min=words[11],  # D12
+            brush_dot_area_max=words[12],  # D13
+            brush_ratio_min_x10=words[13],  # D14
+            brush_ratio_max_x10=words[14],  # D15
         )
 
     def read_brush_head_settings(self) -> BrushHeadSettings | None:
@@ -267,11 +267,11 @@ class LegacyFronbackPLC:
         if not isinstance(words, list) or len(words) < 6:
             return None
         return BrushHeadSettings(
-            cam1_exposure=words[0],          # D10
-            dot_area_min=words[2],           # D12
-            dot_area_max=words[3],           # D13
-            ratio_min_x10=words[4],          # D14
-            ratio_max_x10=words[5],          # D15
+            cam1_exposure=words[0],  # D10
+            dot_area_min=words[2],  # D12
+            dot_area_max=words[3],  # D13
+            ratio_min_x10=words[4],  # D14
+            ratio_max_x10=words[5],  # D15
         )
 
     def read_height_settings(self) -> HeightSettings | None:

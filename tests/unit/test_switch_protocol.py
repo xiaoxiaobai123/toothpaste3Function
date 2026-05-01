@@ -103,7 +103,7 @@ def test_no_op_when_already_both() -> None:
 def test_missing_enabled_field_counts_as_true() -> None:
     cfg = {
         "cameras": {
-            "camera1": {"ip": "1.2.3.4"},                       # no enabled field
+            "camera1": {"ip": "1.2.3.4"},  # no enabled field
             "camera2": {"ip": "5.6.7.8", "enabled": True},
         }
     }
@@ -263,7 +263,10 @@ def test_translate_algo_roi_basic_offset_subtraction() -> None:
     width/height (800, 600) -> {50..750, 50..550}."""
     out = _mod.translate_algo_roi(
         {"x1": 290, "y1": 150, "x2": 990, "y2": 650},
-        offset_x=240, offset_y=100, width=800, height=600,
+        offset_x=240,
+        offset_y=100,
+        width=800,
+        height=600,
     )
     assert out == {"x1": 50, "y1": 50, "x2": 750, "y2": 550}
 
@@ -272,7 +275,10 @@ def test_translate_algo_roi_clamps_negative_to_zero() -> None:
     """ROI start in the cropped-out region (negative after subtract) -> 0."""
     out = _mod.translate_algo_roi(
         {"x1": 100, "y1": 100, "x2": 700, "y2": 500},
-        offset_x=240, offset_y=200, width=800, height=600,
+        offset_x=240,
+        offset_y=200,
+        width=800,
+        height=600,
     )
     # x1: 100-240 = -140 -> clamped to 0
     # y1: 100-200 = -100 -> clamped to 0
@@ -287,7 +293,10 @@ def test_translate_algo_roi_clamps_to_width_height() -> None:
     """ROI extending past the cropped region -> clamped to width/height."""
     out = _mod.translate_algo_roi(
         {"x1": 300, "y1": 200, "x2": 9999, "y2": 9999},
-        offset_x=240, offset_y=100, width=800, height=600,
+        offset_x=240,
+        offset_y=100,
+        width=800,
+        height=600,
     )
     assert out["x2"] == 800
     assert out["y2"] == 600
@@ -297,7 +306,10 @@ def test_translate_algo_roi_zero_offset_is_identity_under_clamp() -> None:
     """offset=0 keeps coords; only clamp may apply."""
     out = _mod.translate_algo_roi(
         {"x1": 100, "y1": 50, "x2": 700, "y2": 500},
-        offset_x=0, offset_y=0, width=800, height=600,
+        offset_x=0,
+        offset_y=0,
+        width=800,
+        height=600,
     )
     assert out == {"x1": 100, "y1": 50, "x2": 700, "y2": 500}
 
@@ -307,23 +319,20 @@ def test_translate_algo_roi_zero_offset_is_identity_under_clamp() -> None:
 # --------------------------------------------------------------------------- #
 def test_apply_hardware_roi_writes_full_dict() -> None:
     cfg = _two_cam_cfg()
-    line = _mod.apply_hardware_roi(
-        cfg, 1, {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100}
-    )
+    line = _mod.apply_hardware_roi(cfg, 1, {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100})
     assert cfg["cameras"]["camera1"]["roi"] == {
-        "width": 800, "height": 600, "offset_x": 240, "offset_y": 100,
+        "width": 800,
+        "height": 600,
+        "offset_x": 240,
+        "offset_y": 100,
     }
     assert "(none)" in line  # was no roi before
 
 
 def test_apply_hardware_roi_replaces_existing() -> None:
     cfg = _two_cam_cfg()
-    cfg["cameras"]["camera1"]["roi"] = {
-        "width": 1024, "height": 768, "offset_x": 0, "offset_y": 0
-    }
-    line = _mod.apply_hardware_roi(
-        cfg, 1, {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100}
-    )
+    cfg["cameras"]["camera1"]["roi"] = {"width": 1024, "height": 768, "offset_x": 0, "offset_y": 0}
+    line = _mod.apply_hardware_roi(cfg, 1, {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100})
     assert cfg["cameras"]["camera1"]["roi"]["width"] == 800
     assert "1024" in line and "800" in line
 
@@ -343,9 +352,7 @@ def test_apply_hardware_roi_rejects_non_4_aligned_width() -> None:
 def test_apply_hardware_roi_rejects_non_4_aligned_offset() -> None:
     cfg = _two_cam_cfg()
     with pytest.raises(ValueError, match="offset_x=241"):
-        _mod.apply_hardware_roi(
-            cfg, 1, {"width": 800, "height": 600, "offset_x": 241, "offset_y": 0}
-        )
+        _mod.apply_hardware_roi(cfg, 1, {"width": 800, "height": 600, "offset_x": 241, "offset_y": 0})
 
 
 def test_apply_hardware_roi_rejects_zero_dimensions() -> None:
@@ -356,9 +363,7 @@ def test_apply_hardware_roi_rejects_zero_dimensions() -> None:
 
 def test_reset_hardware_roi_removes_field() -> None:
     cfg = _two_cam_cfg()
-    cfg["cameras"]["camera1"]["roi"] = {
-        "width": 800, "height": 600, "offset_x": 0, "offset_y": 0
-    }
+    cfg["cameras"]["camera1"]["roi"] = {"width": 800, "height": 600, "offset_x": 0, "offset_y": 0}
     line = _mod.reset_hardware_roi(cfg, 1)
     assert line is not None
     assert "roi" not in cfg["cameras"]["camera1"]
@@ -445,9 +450,7 @@ def test_reset_algo_roi_translation_restores_from_snapshot(tmp_path: Path) -> No
     )
     _mod.reset_algo_roi_translation(tmp_path, ip)
 
-    restored = __import__("json").loads(
-        _mod.algo_roi_path(tmp_path, ip).read_text(encoding="utf-8")
-    )
+    restored = __import__("json").loads(_mod.algo_roi_path(tmp_path, ip).read_text(encoding="utf-8"))
     assert restored == full_frame_roi
     # Snapshot deleted.
     assert not _mod.algo_roi_snapshot_path(tmp_path, ip).exists()
@@ -461,9 +464,7 @@ def test_reset_algo_roi_translation_no_snapshot_is_noop(tmp_path: Path) -> None:
     lines = _mod.reset_algo_roi_translation(tmp_path, ip)
 
     assert any("no .full_frame snapshot" in line for line in lines)
-    untouched = __import__("json").loads(
-        _mod.algo_roi_path(tmp_path, ip).read_text(encoding="utf-8")
-    )
+    untouched = __import__("json").loads(_mod.algo_roi_path(tmp_path, ip).read_text(encoding="utf-8"))
     assert untouched == full_frame_roi
 
 
@@ -479,19 +480,21 @@ def _stub_roi_io(monkeypatch: pytest.MonkeyPatch, base_dir: Path) -> None:
 
 
 def test_do_roi_apply_both_cameras_writes_two_roi_dicts(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     _stub_roi_io(monkeypatch, tmp_path)
     cfg = _two_cam_cfg()
-    _seed_algo_roi(tmp_path, "192.168.2.10",
-                   {"x1": 290, "y1": 150, "x2": 990, "y2": 650})
-    _seed_algo_roi(tmp_path, "192.168.3.10",
-                   {"x1": 290, "y1": 150, "x2": 990, "y2": 650})
+    _seed_algo_roi(tmp_path, "192.168.2.10", {"x1": 290, "y1": 150, "x2": 990, "y2": 650})
+    _seed_algo_roi(tmp_path, "192.168.3.10", {"x1": 290, "y1": 150, "x2": 990, "y2": 650})
 
     rc = _mod._do_roi(
-        cfg, "both",
+        cfg,
+        "both",
         {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100},
-        reset=False, translate_algo=True, no_restart=True,
+        reset=False,
+        translate_algo=True,
+        no_restart=True,
     )
 
     assert rc == 0
@@ -500,7 +503,8 @@ def test_do_roi_apply_both_cameras_writes_two_roi_dicts(
 
 
 def test_do_roi_reset_removes_roi_and_restores_algo(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     _stub_roi_io(monkeypatch, tmp_path)
     cfg = _two_cam_cfg()
@@ -509,13 +513,20 @@ def test_do_roi_reset_removes_roi_and_restores_algo(
 
     # First apply, then reset.
     _mod._do_roi(
-        cfg, "cam1",
+        cfg,
+        "cam1",
         {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100},
-        reset=False, translate_algo=True, no_restart=True,
+        reset=False,
+        translate_algo=True,
+        no_restart=True,
     )
     _mod._do_roi(
-        cfg, "cam1", None,
-        reset=True, translate_algo=True, no_restart=True,
+        cfg,
+        "cam1",
+        None,
+        reset=True,
+        translate_algo=True,
+        no_restart=True,
     )
 
     assert "roi" not in cfg["cameras"]["camera1"]
@@ -526,7 +537,8 @@ def test_do_roi_reset_removes_roi_and_restores_algo(
 
 
 def test_do_roi_skips_unconfigured_camera(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     """If config only has camera1, `roi both --width ...` should not crash —
     just apply to camera1 and skip camera2 with a note."""
@@ -534,9 +546,12 @@ def test_do_roi_skips_unconfigured_camera(
     cfg = {"cameras": {"camera1": {"ip": "1.2.3.4", "enabled": True}}}
 
     rc = _mod._do_roi(
-        cfg, "both",
+        cfg,
+        "both",
         {"width": 800, "height": 600, "offset_x": 0, "offset_y": 0},
-        reset=False, translate_algo=False, no_restart=True,
+        reset=False,
+        translate_algo=False,
+        no_restart=True,
     )
 
     assert rc == 0

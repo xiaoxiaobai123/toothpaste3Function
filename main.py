@@ -57,9 +57,7 @@ async def _main() -> None:
         # using feh/fbi instead — none of the live customers do, so writing
         # it every cycle just burns ~10-30 ms encoding to a file no one
         # reads. Tests pass an explicit png_path when they need it.
-        orchestrator = LegacyFronbackOrchestrator(
-            plc, camera_manager, roi_provider, logger, png_path=None
-        )
+        orchestrator = LegacyFronbackOrchestrator(plc, camera_manager, roi_provider, logger, png_path=None)
         await orchestrator.run()
     else:
         from core.task_manager import TaskManager

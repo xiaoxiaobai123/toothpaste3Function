@@ -34,10 +34,10 @@ class BrushHeadCycleResult:
     """One brush-head cycle's result, ready for the orchestrator to write
     to PLC + display."""
 
-    plc_result: int                  # D0: 1=OK, 2=NG
-    dot_count: int                   # D42 (clamped to uint16 by writer)
-    area: int                        # D43 (raw; writer divides by 100)
-    display_image: np.ndarray        # Visualization for the rgb565 sink
+    plc_result: int  # D0: 1=OK, 2=NG
+    dot_count: int  # D42 (clamped to uint16 by writer)
+    area: int  # D43 (raw; writer divides by 100)
+    display_image: np.ndarray  # Visualization for the rgb565 sink
 
 
 # A single processor instance is reused across cycles — it's stateless
@@ -46,9 +46,7 @@ class BrushHeadCycleResult:
 _PROCESSOR = BrushHeadProcessor()
 
 
-def _merge_with_defaults(
-    legacy: BrushHeadSettings, defaults: dict[str, Any]
-) -> dict[str, Any]:
+def _merge_with_defaults(legacy: BrushHeadSettings, defaults: dict[str, Any]) -> dict[str, Any]:
     """Build the v2-shaped raw_config dict, swapping in defaults for any
     legacy slot the PLC left at 0.
 
@@ -62,25 +60,13 @@ def _merge_with_defaults(
     """
     raw = [0] * 18
 
-    raw[8] = (
-        legacy.dot_area_min
-        if legacy.dot_area_min != 0
-        else int(defaults["dot_area_min"])
-    )
-    raw[9] = (
-        legacy.dot_area_max
-        if legacy.dot_area_max != 0
-        else int(defaults["dot_area_max"])
-    )
+    raw[8] = legacy.dot_area_min if legacy.dot_area_min != 0 else int(defaults["dot_area_min"])
+    raw[9] = legacy.dot_area_max if legacy.dot_area_max != 0 else int(defaults["dot_area_max"])
     raw[14] = (
-        legacy.ratio_min_x10
-        if legacy.ratio_min_x10 != 0
-        else int(round(float(defaults["ratio_min"]) * 10))
+        legacy.ratio_min_x10 if legacy.ratio_min_x10 != 0 else int(round(float(defaults["ratio_min"]) * 10))
     )
     raw[15] = (
-        legacy.ratio_max_x10
-        if legacy.ratio_max_x10 != 0
-        else int(round(float(defaults["ratio_max"]) * 10))
+        legacy.ratio_max_x10 if legacy.ratio_max_x10 != 0 else int(round(float(defaults["ratio_max"]) * 10))
     )
 
     return {
@@ -116,13 +102,11 @@ def run_brush_head(
     settings = _merge_with_defaults(legacy_settings, defaults)
     outcome = _PROCESSOR.process(image, settings)
 
-    plc_result = (
-        RESULT_FRONT_OR_OK if outcome.result == ProcessResult.OK else RESULT_BACK_OR_NG
-    )
+    plc_result = RESULT_FRONT_OR_OK if outcome.result == ProcessResult.OK else RESULT_BACK_OR_NG
 
     return BrushHeadCycleResult(
         plc_result=plc_result,
-        dot_count=0,   # TODO(brush_head): expose via Outcome side-channel
+        dot_count=0,  # TODO(brush_head): expose via Outcome side-channel
         area=0,
         display_image=outcome.image,
     )

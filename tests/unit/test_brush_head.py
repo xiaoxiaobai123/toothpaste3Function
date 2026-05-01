@@ -148,9 +148,7 @@ def test_brush_head_manual_roi_zero_means_auto_detect() -> None:
     img = _draw_brush(upper_dots=80, lower_dots=20, seed=42)
 
     auto = BrushHeadProcessor().process(img, _build_settings())
-    explicit_zero = BrushHeadProcessor().process(
-        img, _build_settings(manual_roi=(0, 0, 0, 0))
-    )
+    explicit_zero = BrushHeadProcessor().process(img, _build_settings(manual_roi=(0, 0, 0, 0)))
 
     assert auto.result == explicit_zero.result
     assert int(auto.center[0]) == int(explicit_zero.center[0])
@@ -176,16 +174,12 @@ def test_brush_head_manual_roi_pre_crops_search_area() -> None:
     auto = BrushHeadProcessor().process(img, _build_settings())
 
     # Manual ROI tight around centre cluster (cluster spans 100..700 x, 200..400 y).
-    manual = BrushHeadProcessor().process(
-        img, _build_settings(manual_roi=(100, 200, 700, 400))
-    )
+    manual = BrushHeadProcessor().process(img, _build_settings(manual_roi=(100, 200, 700, 400)))
 
     # Either manual succeeds where auto failed, OR both succeed with the
     # same side classification. We don't accept the case where manual
     # gives a different side than what the centred cluster actually shows.
-    assert manual.result == ProcessResult.OK, (
-        f"manual ROI should classify cleanly, got {manual.result}"
-    )
+    assert manual.result == ProcessResult.OK, f"manual ROI should classify cleanly, got {manual.result}"
     assert int(manual.center[0]) == 1, "centre cluster has upper-denser dots → Front"
     # Auto path may NG on the distorted hull. If it OKs, that's a happy
     # accident — but the test's main proof is manual succeeded.
@@ -224,9 +218,7 @@ def test_brush_head_fail_image_draws_manual_roi() -> None:
     # Blank image so dot detection fails immediately; manual_roi set.
     img = np.full((600, 800, 3), 230, dtype=np.uint8)
     manual_roi = (100, 100, 700, 500)
-    outcome = BrushHeadProcessor().process(
-        img, _build_settings(manual_roi=manual_roi)
-    )
+    outcome = BrushHeadProcessor().process(img, _build_settings(manual_roi=manual_roi))
     # Expect failure (no dots → no valid ROI).
     assert outcome.result == ProcessResult.NG
     fail_img = outcome.image
@@ -250,9 +242,5 @@ def test_brush_head_fail_image_omits_manual_roi_when_none() -> None:
     fail_img = outcome.image
 
     # No purple should appear anywhere on the fail image (just red text + grey params).
-    purple_pixels = (
-        (fail_img[..., 0] > 200) & (fail_img[..., 1] < 50) & (fail_img[..., 2] > 200)
-    ).sum()
-    assert purple_pixels < 50, (
-        f"expected ~no purple on auto-detect fail image, found {purple_pixels} pixels"
-    )
+    purple_pixels = ((fail_img[..., 0] > 200) & (fail_img[..., 1] < 50) & (fail_img[..., 2] > 200)).sum()
+    assert purple_pixels < 50, f"expected ~no purple on auto-detect fail image, found {purple_pixels} pixels"

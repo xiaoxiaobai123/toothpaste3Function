@@ -80,9 +80,14 @@ def _install_fake_fcntl(monkeypatch: pytest.MonkeyPatch, xres: int, yres: int) -
     monkeypatch.setattr("core.framebuffer.fcntl", fake_mod)
 
     class _FakeFile:
-        def __enter__(self) -> _FakeFile: return self
-        def __exit__(self, *args: object) -> None: return None
-        def fileno(self) -> int: return 99
+        def __enter__(self) -> _FakeFile:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def fileno(self) -> int:
+            return 99
 
     monkeypatch.setattr("builtins.open", lambda *a, **kw: _FakeFile())
     sys.modules.pop("_dummy_fcntl_helper", None)  # silence unused import

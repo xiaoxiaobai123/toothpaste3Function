@@ -44,6 +44,7 @@ Notes:
   main.service, which on next start applies the new ROI. `--reset`
   removes the roi field so the camera starts in full-frame mode again.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -72,9 +73,9 @@ ALIASES = {
 # absent from the config (e.g. single-camera sites) are silently skipped so
 # this works on any deployment.
 CAMERA_PRESETS: dict[str, dict[str, bool]] = {
-    "cam1": {"camera1": True,  "camera2": False},
+    "cam1": {"camera1": True, "camera2": False},
     "cam2": {"camera1": False, "camera2": True},
-    "both": {"camera1": True,  "camera2": True},
+    "both": {"camera1": True, "camera2": True},
 }
 
 # Camera-target presets reused for `cameras` and `roi` actions.
@@ -168,16 +169,14 @@ def apply_hardware_roi(cfg: dict, cam_num: int, hw_roi: dict[str, int]) -> str:
 
     if width <= 0 or height <= 0:
         raise ValueError(f"width/height must be positive, got {width}x{height}")
-    for name, value in (("width", width), ("height", height),
-                        ("offset_x", offset_x), ("offset_y", offset_y)):
+    for name, value in (("width", width), ("height", height), ("offset_x", offset_x), ("offset_y", offset_y)):
         if value % ROI_ALIGNMENT != 0:
             raise ValueError(
                 f"{name}={value} is not a multiple of {ROI_ALIGNMENT} "
                 f"(MVS hardware ROI alignment requirement)"
             )
 
-    new_roi = {"width": width, "height": height,
-               "offset_x": offset_x, "offset_y": offset_y}
+    new_roi = {"width": width, "height": height, "offset_x": offset_x, "offset_y": offset_y}
     old = cfg["cameras"][cam_key].get("roi")
     cfg["cameras"][cam_key]["roi"] = new_roi
     if old is None:
@@ -213,9 +212,9 @@ def translate_algo_roi(
     relative to the cropped frame.
     """
     return {
-        "x1": max(0, min(width,  int(algo_roi["x1"]) - offset_x)),
+        "x1": max(0, min(width, int(algo_roi["x1"]) - offset_x)),
         "y1": max(0, min(height, int(algo_roi["y1"]) - offset_y)),
-        "x2": max(0, min(width,  int(algo_roi["x2"]) - offset_x)),
+        "x2": max(0, min(width, int(algo_roi["x2"]) - offset_x)),
         "y2": max(0, min(height, int(algo_roi["y2"]) - offset_y)),
     }
 
@@ -240,9 +239,7 @@ def algo_roi_snapshot_path(base_dir: Path, camera_ip: str) -> Path:
     return base_dir / f"roi_coordinates_{camera_ip.replace('.', '_')}.full_frame.json"
 
 
-def apply_algo_roi_translation(
-    base_dir: Path, camera_ip: str, hw_roi: dict[str, int]
-) -> list[str]:
+def apply_algo_roi_translation(base_dir: Path, camera_ip: str, hw_roi: dict[str, int]) -> list[str]:
     """Translate the algorithm ROI file in-place to the cropped frame's coords.
 
     Snapshots the full-frame ROI to `<file>.full_frame.json` on first call
@@ -453,9 +450,7 @@ def _do_roi(
         output_lines.append(change)
         any_change = True
         if translate_algo and camera_ip:
-            output_lines.extend(
-                apply_algo_roi_translation(ALGO_ROI_DIR, camera_ip, hw_roi)
-            )
+            output_lines.extend(apply_algo_roi_translation(ALGO_ROI_DIR, camera_ip, hw_roi))
 
     for line in output_lines:
         print(line)
@@ -490,22 +485,31 @@ def main() -> int:
         help="for cameras / roi actions: cam1 | cam2 | both",
     )
     p.add_argument(
-        "--no-restart", action="store_true",
+        "--no-restart",
+        action="store_true",
         help="update config.json but don't restart main.service",
     )
     # roi-specific flags.
-    p.add_argument("--width", type=int, default=None,
-                   help="(roi) hardware ROI width in pixels (multiple of 4)")
-    p.add_argument("--height", type=int, default=None,
-                   help="(roi) hardware ROI height in pixels (multiple of 4)")
-    p.add_argument("--offset-x", type=int, default=0,
-                   help="(roi) hardware ROI offset X (multiple of 4, default 0)")
-    p.add_argument("--offset-y", type=int, default=0,
-                   help="(roi) hardware ROI offset Y (multiple of 4, default 0)")
-    p.add_argument("--reset", action="store_true",
-                   help="(roi) remove the hardware ROI for the target camera(s)")
-    p.add_argument("--no-translate-algo-roi", action="store_true",
-                   help="(roi) skip translating roi_coordinates_<ip>.json (advanced)")
+    p.add_argument(
+        "--width", type=int, default=None, help="(roi) hardware ROI width in pixels (multiple of 4)"
+    )
+    p.add_argument(
+        "--height", type=int, default=None, help="(roi) hardware ROI height in pixels (multiple of 4)"
+    )
+    p.add_argument(
+        "--offset-x", type=int, default=0, help="(roi) hardware ROI offset X (multiple of 4, default 0)"
+    )
+    p.add_argument(
+        "--offset-y", type=int, default=0, help="(roi) hardware ROI offset Y (multiple of 4, default 0)"
+    )
+    p.add_argument(
+        "--reset", action="store_true", help="(roi) remove the hardware ROI for the target camera(s)"
+    )
+    p.add_argument(
+        "--no-translate-algo-roi",
+        action="store_true",
+        help="(roi) skip translating roi_coordinates_<ip>.json (advanced)",
+    )
     args = p.parse_args()
 
     # Cross-action validation.
@@ -521,10 +525,11 @@ def main() -> int:
             p.error("--reset cannot be combined with --width / --height")
         if not args.reset and (args.width is None or args.height is None):
             p.error("'roi' action requires --width and --height (or --reset)")
-    elif roi_dim_flags_set or args.reset or args.offset_x or args.offset_y \
-            or args.no_translate_algo_roi:
-        p.error("--width / --height / --offset-* / --reset / --no-translate-algo-roi "
-                "are only valid with the 'roi' action")
+    elif roi_dim_flags_set or args.reset or args.offset_x or args.offset_y or args.no_translate_algo_roi:
+        p.error(
+            "--width / --height / --offset-* / --reset / --no-translate-algo-roi "
+            "are only valid with the 'roi' action"
+        )
 
     cfg = read_config()
 
@@ -543,7 +548,9 @@ def main() -> int:
                 "offset_y": args.offset_y,
             }
         return _do_roi(
-            cfg, args.selection, hw_roi,
+            cfg,
+            args.selection,
+            hw_roi,
             reset=args.reset,
             translate_algo=not args.no_translate_algo_roi,
             no_restart=args.no_restart,

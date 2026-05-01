@@ -165,8 +165,7 @@ async def test_frontback_one_cycle_writes_d0_and_edge_counts(
     assert plc.regs[REG_CAM1_STATUS] == 1, "D3 cam1 status not set"
     assert plc.regs[REG_CAM2_STATUS] == 1, "D4 cam2 status not set"
     cam_status_writes = [
-        (addr, vals) for addr, vals in plc.writes
-        if addr == REG_CAM1_STATUS and len(vals) == 2
+        (addr, vals) for addr, vals in plc.writes if addr == REG_CAM1_STATUS and len(vals) == 2
     ]
     assert cam_status_writes, "block write of D3+D4 cam status not produced"
 
@@ -349,8 +348,7 @@ async def test_frontback_renders_offline_placeholder_when_cam1_missing(
     assert plc.regs[REG_CAM1_STATUS] == 0, "cam1 should be marked offline"
     assert plc.regs[REG_CAM2_STATUS] == 1, "cam2 should be marked online"
     cam_status_writes = [
-        (addr, vals) for addr, vals in plc.writes
-        if addr == REG_CAM1_STATUS and len(vals) == 2
+        (addr, vals) for addr, vals in plc.writes if addr == REG_CAM1_STATUS and len(vals) == 2
     ]
     assert cam_status_writes, "block write of D3+D4 cam status not produced"
     # But D0 (recognition result) and D20-D23 (edge counts) MUST NOT be
@@ -359,9 +357,7 @@ async def test_frontback_renders_offline_placeholder_when_cam1_missing(
     assert REG_RECOGNITION_RESULT not in addrs_written, (
         "D0 should NOT be written when cam1 is offline (algorithm didn't run)"
     )
-    assert REG_EDGE1_LOW not in addrs_written, (
-        "edge counts should NOT be written when cam1 is offline"
-    )
+    assert REG_EDGE1_LOW not in addrs_written, "edge counts should NOT be written when cam1 is offline"
     # Trigger handshake still completes so the PLC doesn't time out.
     d1_writes = [v[0] for addr, v in plc.writes if addr == REG_CAPTURE_TRIGGER]
     assert TRIGGER_IDLE in d1_writes
@@ -369,9 +365,7 @@ async def test_frontback_renders_offline_placeholder_when_cam1_missing(
 
 
 @pytest.mark.asyncio
-async def test_loop_runs_multiple_cycles_until_d1_changes(
-    cam_dir: tuple[Path, Path], tmp_path: Path
-) -> None:
+async def test_loop_runs_multiple_cycles_until_d1_changes(cam_dir: tuple[Path, Path], tmp_path: Path) -> None:
     """LOOP mode (D1=11) keeps capturing until PLC writes anything else."""
     d1, d2 = cam_dir
 
@@ -403,15 +397,11 @@ async def test_loop_runs_multiple_cycles_until_d1_changes(
 
     # Multiple D0 writes during the loop (≥2 captures completed).
     d0_writes = [v[0] for addr, v in plc.writes if addr == REG_RECOGNITION_RESULT]
-    assert len(d0_writes) >= 2, (
-        f"expected multiple D0 writes during LOOP, got {len(d0_writes)}"
-    )
+    assert len(d0_writes) >= 2, f"expected multiple D0 writes during LOOP, got {len(d0_writes)}"
 
 
 @pytest.mark.asyncio
-async def test_loop_does_not_write_d1_handshake(
-    cam_dir: tuple[Path, Path], tmp_path: Path
-) -> None:
+async def test_loop_does_not_write_d1_handshake(cam_dir: tuple[Path, Path], tmp_path: Path) -> None:
     """In LOOP mode the PLC owns D1 — orchestrator must not write IDLE/DONE
     to it during the loop (would prematurely flip out of LOOP or signal
     single-capture-complete semantics that don't apply)."""
@@ -428,8 +418,12 @@ async def test_loop_does_not_write_d1_handshake(
     roi = make_file_roi_provider(cam, base_dir=tmp_path, logger=_logger())
 
     orchestrator = LegacyFronbackOrchestrator(
-        legacy_plc, cam, roi, _logger(),
-        png_path=tmp_path / "p.png", rgb565_path=tmp_path / "p.rgb565",
+        legacy_plc,
+        cam,
+        roi,
+        _logger(),
+        png_path=tmp_path / "p.png",
+        rgb565_path=tmp_path / "p.rgb565",
     )
     task = asyncio.create_task(orchestrator.run())
 
@@ -445,9 +439,7 @@ async def test_loop_does_not_write_d1_handshake(
     # PLC reg directly via plc.regs[…], so plc.writes only captures what the
     # orchestrator sent via the PLCBase.write_status path.)
     d1_writes = [(addr, v) for addr, v in plc.writes if addr == REG_CAPTURE_TRIGGER]
-    assert d1_writes == [], (
-        f"orchestrator wrote D1 during LOOP — should not happen: {d1_writes}"
-    )
+    assert d1_writes == [], f"orchestrator wrote D1 during LOOP — should not happen: {d1_writes}"
 
 
 @pytest.mark.asyncio
@@ -466,7 +458,7 @@ async def test_loop_honors_mid_loop_mode_change(
     plc.regs[REG_HEIGHT_CAM2_EXPOSURE] = 5000
     plc.regs[31] = 200  # height brightness threshold
     plc.regs[32] = 100  # min_y
-    plc.regs[35] = 50   # height comparison
+    plc.regs[35] = 50  # height comparison
 
     legacy_plc = LegacyFronbackPLC(plc_base=plc)
     # Wire cam2 to the height-mode-friendly directory
@@ -474,8 +466,12 @@ async def test_loop_honors_mid_loop_mode_change(
     roi = make_file_roi_provider(cam, base_dir=tmp_path, logger=_logger())
 
     orchestrator = LegacyFronbackOrchestrator(
-        legacy_plc, cam, roi, _logger(),
-        png_path=tmp_path / "p.png", rgb565_path=tmp_path / "p.rgb565",
+        legacy_plc,
+        cam,
+        roi,
+        _logger(),
+        png_path=tmp_path / "p.png",
+        rgb565_path=tmp_path / "p.rgb565",
     )
     task = asyncio.create_task(orchestrator.run())
 
@@ -501,7 +497,9 @@ async def test_loop_honors_mid_loop_mode_change(
 
 @pytest.mark.asyncio
 async def test_brush_head_d2_2_dispatches_brushhead_processor(
-    cam_dir: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    cam_dir: tuple[Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """D2=2 + D1=10 → orchestrator routes through brush_head adapter:
     writes D0 + D42/D43, runs single-camera (cam1), writes display sink.
@@ -521,11 +519,16 @@ async def test_brush_head_d2_2_dispatches_brushhead_processor(
     # Stub the orchestrator's defaults provider so the test doesn't need a
     # real config.json on disk.
     from legacy.fronback_orchestrator import LegacyFronbackOrchestrator
+
     monkeypatch.setattr(
-        LegacyFronbackOrchestrator, "_brush_head_defaults",
+        LegacyFronbackOrchestrator,
+        "_brush_head_defaults",
         lambda self: {
-            "exposure": 5000, "dot_area_min": 20, "dot_area_max": 500,
-            "ratio_min": 1.5, "ratio_max": 3.5,
+            "exposure": 5000,
+            "dot_area_min": 20,
+            "dot_area_max": 500,
+            "ratio_min": 1.5,
+            "ratio_max": 3.5,
         },
     )
 
@@ -536,8 +539,12 @@ async def test_brush_head_d2_2_dispatches_brushhead_processor(
     png_path = tmp_path / "processed_image.png"
     rgb565_path = tmp_path / "output_image.rgb565"
     orchestrator = LegacyFronbackOrchestrator(
-        legacy_plc, cam, roi, _logger(),
-        png_path=png_path, rgb565_path=rgb565_path,
+        legacy_plc,
+        cam,
+        roi,
+        _logger(),
+        png_path=png_path,
+        rgb565_path=rgb565_path,
     )
     task = asyncio.create_task(orchestrator.run())
 

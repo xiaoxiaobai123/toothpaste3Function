@@ -24,7 +24,7 @@ class _MockMvCamera:
     """Records every SetIntValue / GetIntValue. GetIntValue("Width" / "Height")
     populates the passed-in struct with `nMax` = SENSOR_MAX_W / H."""
 
-    SENSOR_MAX_W = 1280   # MV-CA013-A0GC = 1280x1024 (130-万)
+    SENSOR_MAX_W = 1280  # MV-CA013-A0GC = 1280x1024 (130-万)
     SENSOR_MAX_H = 1024
 
     def __init__(self) -> None:
@@ -41,7 +41,7 @@ class _MockMvCamera:
         if self.fail_get:
             return 0x80000007  # MV_E_PARAMETER
         if name == "Width":
-            struct_obj.nCurValue = 800   # echoes residual ROI; not what we care about
+            struct_obj.nCurValue = 800  # echoes residual ROI; not what we care about
             struct_obj.nMax = self.SENSOR_MAX_W
         elif name == "Height":
             struct_obj.nCurValue = 600
@@ -60,11 +60,9 @@ def _camera_with_mock(roi: dict | None) -> tuple[CameraBase, _MockMvCamera]:
 # Configured-ROI path: SetIntValue with the explicit width/height/offsets.
 # --------------------------------------------------------------------------- #
 def test_apply_roi_configured_writes_width_height_offsets() -> None:
-    cam, mock = _camera_with_mock(
-        {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100}
-    )
+    cam, mock = _camera_with_mock({"width": 800, "height": 600, "offset_x": 240, "offset_y": 100})
     assert cam._apply_roi() is True
-    assert ("OffsetX", 0) in mock.set_calls   # zeroed FIRST
+    assert ("OffsetX", 0) in mock.set_calls  # zeroed FIRST
     assert ("OffsetY", 0) in mock.set_calls
     assert ("Width", 800) in mock.set_calls
     assert ("Height", 600) in mock.set_calls
@@ -76,9 +74,7 @@ def test_apply_roi_configured_writes_width_height_offsets() -> None:
 
 def test_apply_roi_configured_zeros_offsets_before_setting_size() -> None:
     """OffsetX=0 must come BEFORE SetIntValue Width — Width.nMax is dynamic."""
-    cam, mock = _camera_with_mock(
-        {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100}
-    )
+    cam, mock = _camera_with_mock({"width": 800, "height": 600, "offset_x": 240, "offset_y": 100})
     cam._apply_roi()
 
     set_names = [n for n, _ in mock.set_calls]
@@ -151,9 +147,7 @@ def test_apply_roi_reset_returns_false_when_get_max_fails() -> None:
 def test_apply_roi_called_twice_is_idempotent() -> None:
     """Calling twice (e.g. across a re-init) emits the same writes both times,
     so a second pass corrects any drift accumulated outside our control."""
-    cam, mock = _camera_with_mock(
-        {"width": 800, "height": 600, "offset_x": 240, "offset_y": 100}
-    )
+    cam, mock = _camera_with_mock({"width": 800, "height": 600, "offset_x": 240, "offset_y": 100})
     cam._apply_roi()
     first_round = list(mock.set_calls)
     mock.set_calls.clear()

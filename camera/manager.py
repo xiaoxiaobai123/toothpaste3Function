@@ -123,9 +123,7 @@ class CameraManager:
         if now - self._last_reinit_at.get(camera_num, 0.0) < self.AUTO_REINIT_COOLDOWN_S:
             return
         self._last_reinit_at[camera_num] = now
-        logger.warning(
-            f"[Cam{camera_num}] {n} consecutive capture failures — auto-reinit attempt"
-        )
+        logger.warning(f"[Cam{camera_num}] {n} consecutive capture failures — auto-reinit attempt")
         if self.reinitialize_camera(camera_num):
             logger.info(f"[Cam{camera_num}] auto-reinit succeeded")
             self._consecutive_failures.pop(camera_num, None)

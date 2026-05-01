@@ -37,8 +37,11 @@ _DEFAULTS = {
 def _zero_settings() -> BrushHeadSettings:
     """A 'PLC didn't write any params' settings — every field 0 means defaults."""
     return BrushHeadSettings(
-        cam1_exposure=0, dot_area_min=0, dot_area_max=0,
-        ratio_min_x10=0, ratio_max_x10=0,
+        cam1_exposure=0,
+        dot_area_min=0,
+        dot_area_max=0,
+        ratio_min_x10=0,
+        ratio_max_x10=0,
     )
 
 
@@ -48,7 +51,7 @@ def _zero_settings() -> BrushHeadSettings:
 def test_merge_uses_defaults_when_plc_writes_zero() -> None:
     out = _merge_with_defaults(_zero_settings(), _DEFAULTS)
     raw = out["raw_config"]
-    assert raw[8] == 20   # default dot_area_min
+    assert raw[8] == 20  # default dot_area_min
     assert raw[9] == 500  # default dot_area_max
     assert raw[14] == 15  # default ratio_min × 10
     assert raw[15] == 35  # default ratio_max × 10
@@ -57,8 +60,10 @@ def test_merge_uses_defaults_when_plc_writes_zero() -> None:
 def test_merge_uses_plc_value_when_nonzero() -> None:
     settings = BrushHeadSettings(
         cam1_exposure=0,
-        dot_area_min=99, dot_area_max=999,
-        ratio_min_x10=18, ratio_max_x10=32,
+        dot_area_min=99,
+        dot_area_max=999,
+        ratio_min_x10=18,
+        ratio_max_x10=32,
     )
     out = _merge_with_defaults(settings, _DEFAULTS)
     raw = out["raw_config"]
@@ -72,16 +77,16 @@ def test_merge_mixes_plc_and_defaults_per_slot() -> None:
     """One PLC field set, others 0 — should produce a hybrid raw_config."""
     settings = BrushHeadSettings(
         cam1_exposure=0,
-        dot_area_min=77,    # custom
-        dot_area_max=0,     # default
-        ratio_min_x10=0,    # default
-        ratio_max_x10=40,   # custom (4.0)
+        dot_area_min=77,  # custom
+        dot_area_max=0,  # default
+        ratio_min_x10=0,  # default
+        ratio_max_x10=40,  # custom (4.0)
     )
     out = _merge_with_defaults(settings, _DEFAULTS)
     raw = out["raw_config"]
     assert raw[8] == 77
-    assert raw[9] == 500   # default
-    assert raw[14] == 15   # default
+    assert raw[9] == 500  # default
+    assert raw[14] == 15  # default
     assert raw[15] == 40
 
 
@@ -125,8 +130,10 @@ def test_run_brush_head_maps_ok_to_recognition_result_1(monkeypatch) -> None:
 
     # Patch the module-level processor's process method.
     from legacy import fronback_brush_head
+
     monkeypatch.setattr(
-        fronback_brush_head._PROCESSOR, "process",
+        fronback_brush_head._PROCESSOR,
+        "process",
         lambda image, settings: fake_outcome,
     )
 
@@ -145,8 +152,10 @@ def test_run_brush_head_maps_ng_to_recognition_result_2(monkeypatch) -> None:
         angle=0.0,
     )
     from legacy import fronback_brush_head
+
     monkeypatch.setattr(
-        fronback_brush_head._PROCESSOR, "process",
+        fronback_brush_head._PROCESSOR,
+        "process",
         lambda image, settings: fake_outcome,
     )
 
@@ -164,8 +173,10 @@ def test_run_brush_head_maps_exception_to_ng(monkeypatch) -> None:
         angle=0.0,
     )
     from legacy import fronback_brush_head
+
     monkeypatch.setattr(
-        fronback_brush_head._PROCESSOR, "process",
+        fronback_brush_head._PROCESSOR,
+        "process",
         lambda image, settings: fake_outcome,
     )
 
@@ -184,6 +195,7 @@ def test_run_brush_head_passes_merged_settings_to_processor(monkeypatch) -> None
         return Outcome(ProcessResult.OK, image, (1.0, 0.0), 0.0)
 
     from legacy import fronback_brush_head
+
     monkeypatch.setattr(fronback_brush_head._PROCESSOR, "process", _spy_process)
 
     run_brush_head(img, _zero_settings(), _DEFAULTS)

@@ -29,4 +29,5 @@ def _reset_framebuffer_cache() -> None:
     their composed output to that size, breaking dimension assertions.
     """
     from core import framebuffer
+
     framebuffer.reset_cache_for_tests()

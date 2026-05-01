@@ -93,10 +93,7 @@ class BrushHeadProcessor(Processor):
             my2 = min(int(my2), h_img)
             mx1 = max(0, int(mx1))
             my1 = max(0, int(my1))
-            use_manual_roi = (
-                bp["manual_roi"][0] > 0 and bp["manual_roi"][1] > 0
-                and mx2 > mx1 and my2 > my1
-            )
+            use_manual_roi = bp["manual_roi"][0] > 0 and bp["manual_roi"][1] > 0 and mx2 > mx1 and my2 > my1
             if use_manual_roi:
                 search_gray = gray[my1:my2, mx1:mx2]
                 manual_roi_offset = (mx1, my1)
@@ -114,7 +111,10 @@ class BrushHeadProcessor(Processor):
                 return Outcome(
                     ProcessResult.NG,
                     self._fail_image(
-                        image, "No valid ROI found", bp, h_img,
+                        image,
+                        "No valid ROI found",
+                        bp,
+                        h_img,
                         manual_roi=(mx1, my1, mx2, my2) if use_manual_roi else None,
                     ),
                     (0.0, 0.0),
@@ -167,7 +167,10 @@ class BrushHeadProcessor(Processor):
                 return Outcome(
                     ProcessResult.NG,
                     self._fail_image(
-                        image, "Crop too small", bp, h_img,
+                        image,
+                        "Crop too small",
+                        bp,
+                        h_img,
                         manual_roi=(mx1, my1, mx2, my2) if use_manual_roi else None,
                     ),
                     (0.0, 0.0),
@@ -436,9 +439,14 @@ class BrushHeadProcessor(Processor):
             mx1, my1, mx2, my2 = manual_roi
             cv2.rectangle(vis, (mx1, my1), (mx2, my2), (255, 0, 255), 2)
             cv2.putText(
-                vis, "Manual ROI",
+                vis,
+                "Manual ROI",
                 (mx1, max(0, my1 - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1, cv2.LINE_AA,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 0, 255),
+                1,
+                cv2.LINE_AA,
             )
         self._draw_param_info(vis, bp, img_h)
         return vis
@@ -491,9 +499,14 @@ class BrushHeadProcessor(Processor):
             mx1, my1, mx2, my2 = manual_roi
             cv2.rectangle(vis, (mx1, my1), (mx2, my2), (255, 0, 255), 2)
             cv2.putText(
-                vis, "Manual ROI",
+                vis,
+                "Manual ROI",
                 (mx1, max(0, my1 - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1, cv2.LINE_AA,
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 0, 255),
+                1,
+                cv2.LINE_AA,
             )
 
         roi_corners = self._transform_rect_to_original(M_inv, *roi_rect_rot)

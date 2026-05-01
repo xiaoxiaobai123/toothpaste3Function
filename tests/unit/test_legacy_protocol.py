@@ -110,9 +110,7 @@ def test_read_loop_block_uses_one_fifteen_word_request(fake: FakePLCBase) -> Non
     """LOOP path bundles D1-D15 (trigger + mode + frontback + brush) into one
     Modbus read — covers all three modes' parameters in one round-trip."""
     # 15 words: D1 D2 D3 D4 D5 D6 D7 D8 D9 D10 D11 D12 D13 D14 D15
-    fake.scripted_reads = {
-        (REG_CAPTURE_TRIGGER, 15): [11, 1, 0, 0, 0, 0, 0, 0, 0, 5000, 6000, 0, 0, 0, 0]
-    }
+    fake.scripted_reads = {(REG_CAPTURE_TRIGGER, 15): [11, 1, 0, 0, 0, 0, 0, 0, 0, 5000, 6000, 0, 0, 0, 0]}
     legacy = LegacyFronbackPLC(plc_base=fake)
 
     block = legacy.read_loop_block()
@@ -139,21 +137,21 @@ def test_read_loop_block_extracts_correct_word_offsets(fake: FakePLCBase) -> Non
     A wrong offset would silently swap exposures with cam status echoes."""
     fake.scripted_reads = {
         (REG_CAPTURE_TRIGGER, 15): [
-            10,    # D1 trigger
-            2,     # D2 mode (BRUSH_HEAD)
-            99,    # D3 (cam1 status — our own write echoed back)
-            99,    # D4
-            99,    # D5
-            99,    # D6
-            99,    # D7
-            99,    # D8
-            99,    # D9
+            10,  # D1 trigger
+            2,  # D2 mode (BRUSH_HEAD)
+            99,  # D3 (cam1 status — our own write echoed back)
+            99,  # D4
+            99,  # D5
+            99,  # D6
+            99,  # D7
+            99,  # D8
+            99,  # D9
             7777,  # D10 cam1 exposure
             8888,  # D11 cam2 exposure (irrelevant for brush_head)
-            123,   # D12 brush dot_area_min
-            456,   # D13 brush dot_area_max
-            18,    # D14 brush ratio_min × 10 (= 1.8)
-            32,    # D15 brush ratio_max × 10 (= 3.2)
+            123,  # D12 brush dot_area_min
+            456,  # D13 brush dot_area_max
+            18,  # D14 brush ratio_min × 10 (= 1.8)
+            32,  # D15 brush ratio_max × 10 (= 3.2)
         ]
     }
     legacy = LegacyFronbackPLC(plc_base=fake)
@@ -250,9 +248,7 @@ def test_write_camera_statuses_both_online(fake: FakePLCBase) -> None:
 # ----------------------------------------------------------------------
 def test_read_brush_head_settings_uses_six_word_block_read(fake: FakePLCBase) -> None:
     """FIRE path for brush_head reads D10-D15 in one Modbus request."""
-    fake.scripted_reads = {
-        (REG_CAM1_EXPOSURE, 6): [5000, 6000, 100, 800, 18, 32]
-    }
+    fake.scripted_reads = {(REG_CAM1_EXPOSURE, 6): [5000, 6000, 100, 800, 18, 32]}
     legacy = LegacyFronbackPLC(plc_base=fake)
 
     settings = legacy.read_brush_head_settings()
