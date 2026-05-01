@@ -106,10 +106,13 @@ def test_read_height_settings_uses_seven_word_block_read(fake: FakePLCBase) -> N
     assert fake.reads == [(REG_HEIGHT_CAM2_EXPOSURE, 7)]
 
 
-def test_read_loop_block_uses_one_eleven_word_request(fake: FakePLCBase) -> None:
-    """LOOP path bundles D1-D11 into one Modbus read instead of two."""
-    # 11 words: D1 D2 D3 D4 D5 D6 D7 D8 D9 D10 D11
-    fake.scripted_reads = {(REG_CAPTURE_TRIGGER, 11): [11, 1, 0, 0, 0, 0, 0, 0, 0, 5000, 6000]}
+def test_read_loop_block_uses_one_fifteen_word_request(fake: FakePLCBase) -> None:
+    """LOOP path bundles D1-D15 (trigger + mode + frontback + brush) into one
+    Modbus read — covers all three modes' parameters in one round-trip."""
+    # 15 words: D1 D2 D3 D4 D5 D6 D7 D8 D9 D10 D11 D12 D13 D14 D15
+    fake.scripted_reads = {
+        (REG_CAPTURE_TRIGGER, 15): [11, 1, 0, 0, 0, 0, 0, 0, 0, 5000, 6000, 0, 0, 0, 0]
+    }
     legacy = LegacyFronbackPLC(plc_base=fake)
 
     block = legacy.read_loop_block()
@@ -118,8 +121,11 @@ def test_read_loop_block_uses_one_eleven_word_request(fake: FakePLCBase) -> None
     assert block.mode == 1
     assert block.cam1_exposure == 5000
     assert block.cam2_exposure == 6000
-    # Single Modbus round-trip, not two.
-    assert fake.reads == [(REG_CAPTURE_TRIGGER, 11)]
+    # Brush params zeroed in this fixture — frontend mode doesn't read them.
+    assert block.brush_dot_area_min == 0
+    assert block.brush_ratio_max_x10 == 0
+    # Single Modbus round-trip, not multiple.
+    assert fake.reads == [(REG_CAPTURE_TRIGGER, 15)]
 
 
 def test_read_loop_block_returns_none_on_failure(fake: FakePLCBase) -> None:
@@ -129,12 +135,12 @@ def test_read_loop_block_returns_none_on_failure(fake: FakePLCBase) -> None:
 
 
 def test_read_loop_block_extracts_correct_word_offsets(fake: FakePLCBase) -> None:
-    """Word indices: trigger=0, mode=1, cam1_exp=9, cam2_exp=10. A wrong
-    offset would silently swap exposures with garbage like D5/D6."""
+    """Word indices: trigger=0, mode=1, cam1_exp=9, cam2_exp=10, brush=11..14.
+    A wrong offset would silently swap exposures with cam status echoes."""
     fake.scripted_reads = {
-        (REG_CAPTURE_TRIGGER, 11): [
+        (REG_CAPTURE_TRIGGER, 15): [
             10,    # D1 trigger
-            0,     # D2 mode
+            2,     # D2 mode (BRUSH_HEAD)
             99,    # D3 (cam1 status — our own write echoed back)
             99,    # D4
             99,    # D5
@@ -143,23 +149,34 @@ def test_read_loop_block_extracts_correct_word_offsets(fake: FakePLCBase) -> Non
             99,    # D8
             99,    # D9
             7777,  # D10 cam1 exposure
-            8888,  # D11 cam2 exposure
+            8888,  # D11 cam2 exposure (irrelevant for brush_head)
+            123,   # D12 brush dot_area_min
+            456,   # D13 brush dot_area_max
+            18,    # D14 brush ratio_min × 10 (= 1.8)
+            32,    # D15 brush ratio_max × 10 (= 3.2)
         ]
     }
     legacy = LegacyFronbackPLC(plc_base=fake)
     block = legacy.read_loop_block()
     assert block is not None
     assert block.trigger == 10
-    assert block.mode == 0
+    assert block.mode == 2
     assert block.cam1_exposure == 7777
     assert block.cam2_exposure == 8888
+    assert block.brush_dot_area_min == 123
+    assert block.brush_dot_area_max == 456
+    assert block.brush_ratio_min_x10 == 18
+    assert block.brush_ratio_max_x10 == 32
 
 
 def test_does_not_read_d12_d13_unrecognized_threshold(fake: FakePLCBase) -> None:
-    """The original program's dead D12/D13 reads are dropped here.
+    """The frontback path doesn't touch D12/D13 (the original program's dead
+    `unrecognized_threshold` reads).
 
-    If a future change accidentally re-introduces them, this test fails
-    and forces a conscious decision.
+    Note: as of v0.3.14, D12-D15 ARE used — but only by the LOOP block read
+    (for brush_head parameters). The single-shot frontback FIRE path (this
+    test's subject) still leaves them alone, since FIRE-mode frontback
+    only needs D1+D2 + D10+D11.
     """
     fake.scripted_reads = {
         (REG_CAPTURE_TRIGGER, 2): [10, 1],
@@ -226,6 +243,49 @@ def test_write_camera_statuses_both_online(fake: FakePLCBase) -> None:
     legacy = LegacyFronbackPLC(plc_base=fake)
     legacy.write_camera_statuses(cam1_online=True, cam2_online=True)
     assert fake.writes_block == [(REG_CAM1_STATUS, [1, 1])]
+
+
+# ----------------------------------------------------------------------
+# Brush-head reads + writes (D2=2 mode added in v0.3.14)
+# ----------------------------------------------------------------------
+def test_read_brush_head_settings_uses_six_word_block_read(fake: FakePLCBase) -> None:
+    """FIRE path for brush_head reads D10-D15 in one Modbus request."""
+    fake.scripted_reads = {
+        (REG_CAM1_EXPOSURE, 6): [5000, 6000, 100, 800, 18, 32]
+    }
+    legacy = LegacyFronbackPLC(plc_base=fake)
+
+    settings = legacy.read_brush_head_settings()
+    assert settings is not None
+    assert settings.cam1_exposure == 5000
+    assert settings.dot_area_min == 100
+    assert settings.dot_area_max == 800
+    assert settings.ratio_min_x10 == 18
+    assert settings.ratio_max_x10 == 32
+    assert fake.reads == [(REG_CAM1_EXPOSURE, 6)]
+
+
+def test_read_brush_head_settings_returns_none_on_failure(fake: FakePLCBase) -> None:
+    legacy = LegacyFronbackPLC(plc_base=fake)
+    assert legacy.read_brush_head_settings() is None
+
+
+def test_write_brush_head_result_uses_block_write_at_d42(fake: FakePLCBase) -> None:
+    legacy = LegacyFronbackPLC(plc_base=fake)
+    legacy.write_brush_head_result(dot_count=42, area=12345)
+    # area is /100 before being written: 12345 // 100 = 123
+    assert fake.writes_block == [(42, [42, 123])]
+
+
+def test_write_brush_head_result_clamps_to_uint16(fake: FakePLCBase) -> None:
+    legacy = LegacyFronbackPLC(plc_base=fake)
+    # Big values: dot_count clamped to 65535, area /100 also clamped.
+    legacy.write_brush_head_result(dot_count=99999, area=99999999)
+    assert fake.writes_block == [(42, [65535, 65535])]
+    fake.writes_block.clear()
+    # Negative values clamped to 0.
+    legacy.write_brush_head_result(dot_count=-5, area=-100)
+    assert fake.writes_block == [(42, [0, 0])]
 
 
 def test_write_edge_counts_uses_block_write_at_d20(fake: FakePLCBase) -> None:

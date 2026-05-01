@@ -5,10 +5,15 @@ on every value that affects PLC-observable behaviour. See
 `docs/PLC寄存器手册.md` (Legacy section) for the address-by-address spec.
 
 PLC writes (we read):
-    D1   capture trigger   (10 = capture, anything else = idle)
-    D2   workcamera_count  (1 = dual-cam frontback, 0 = single-cam height)
-    D10  cam1 exposure µs              (frontback mode)
+    D1   capture trigger   (10 = capture, 11 = LOOP, anything else = idle)
+    D2   workcamera_count  (1 = dual-cam frontback, 0 = single-cam height,
+                            2 = single-cam brush_head — additive extension)
+    D10  cam1 exposure µs              (frontback mode + brush_head mode)
     D11  cam2 exposure µs              (frontback mode)
+    D12  brush_head dot_area_min       (0 = use config.json default)
+    D13  brush_head dot_area_max       (0 = use default)
+    D14  brush_head ratio_min × 10     (0 = use default; 15 = 1.5 ratio)
+    D15  brush_head ratio_max × 10     (0 = use default; 35 = 3.5 ratio)
     D30  cam2 exposure µs              (height mode)
     D31  height brightness threshold   (0-255)
     D32  height min-Y filter
@@ -25,6 +30,8 @@ We write (PLC reads):
     D20-D23  edge1/edge2 count, each split into low+high uint16 words
     D40  height result (top-10 max-Y average)
     D41  height width result (kept at 0 — placeholder)
+    D42  brush_head dot count (additive extension; 0 = unset)
+    D43  brush_head detected area / 100 (additive extension)
 
 Notes:
     * D12/D13 (`unrecognized_threshold`) are *not* read by this adapter.
@@ -56,6 +63,11 @@ REG_CAM1_STATUS = 3
 REG_CAM2_STATUS = 4
 REG_CAM1_EXPOSURE = 10
 REG_CAM2_EXPOSURE = 11
+# Brush-head parameter block (D2=2 mode). 0 in any slot = use config default.
+REG_BRUSH_DOT_AREA_MIN = 12
+REG_BRUSH_DOT_AREA_MAX = 13
+REG_BRUSH_RATIO_MIN_X10 = 14
+REG_BRUSH_RATIO_MAX_X10 = 15
 REG_EDGE1_LOW = 20
 REG_EDGE1_HIGH = 21
 REG_EDGE2_LOW = 22
@@ -69,6 +81,10 @@ REG_HEIGHT_COMPARISON = 35
 REG_HEIGHT_WIDTH_COMP = 36  # read but unused, kept for compat
 REG_HEIGHT_RESULT = 40
 REG_HEIGHT_WIDTH_RESULT = 41
+# Brush-head output diagnostics (D2=2 mode). Optional — clients that don't
+# read these still get OK/NG via D0.
+REG_BRUSH_DOT_COUNT = 42
+REG_BRUSH_AREA_X100 = 43
 
 # Sentinel values.
 #
@@ -88,6 +104,7 @@ TRIGGER_LOOP = 11
 
 MODE_HEIGHT = 0  # single-camera height detection
 MODE_FRONTBACK = 1  # dual-camera front/back detection
+MODE_BRUSH_HEAD = 2  # single-camera brush-head detection (cam1, additive extension)
 
 RESULT_FRONT_OR_OK = 1
 RESULT_BACK_OR_NG = 2
@@ -115,19 +132,43 @@ class FrontbackSettings:
 
 @dataclass(frozen=True)
 class LoopBlock:
-    """Single-shot D1-D11 read used by the LOOP hot path.
+    """Single-shot D1-D15 read used by the LOOP hot path.
 
-    Bundles trigger + mode + frontback exposures so one Modbus round-trip
-    replaces the two separate `read_trigger_and_mode` + `read_frontback_settings`
-    calls. D3-D9 are read as part of the contiguous block and discarded —
-    they're values we write (cam status / unused), so reading them just
-    echoes our own state back.
+    Bundles trigger + mode + frontback exposures + brush-head parameters
+    so one Modbus round-trip serves all three modes (height needs nothing
+    here, frontback needs D10/D11, brush_head needs D10 + D12-D15). D3-D9
+    are read as part of the contiguous span and discarded — they're values
+    we write (cam status / unused), so reading them echoes our own state.
     """
 
     trigger: int
     mode: int
     cam1_exposure: int
     cam2_exposure: int
+    # Brush-head extension fields (D12-D15). 0 = "use config default" per slot.
+    brush_dot_area_min: int
+    brush_dot_area_max: int
+    brush_ratio_min_x10: int
+    brush_ratio_max_x10: int
+
+
+@dataclass(frozen=True)
+class BrushHeadSettings:
+    """Brush-head detection parameters from PLC.
+
+    Each field is a raw PLC word; 0 means "use the config.json default for
+    this parameter" — the adapter in `legacy/fronback_brush_head.py` does
+    the merge with config defaults before calling the v2 BrushHeadProcessor.
+
+    Sharing cam1_exposure with frontback's D10 lets the LOOP block read
+    cover both modes without a separate request.
+    """
+
+    cam1_exposure: int       # D10
+    dot_area_min: int        # D12 (raw uint16; 0 = default)
+    dot_area_max: int        # D13
+    ratio_min_x10: int       # D14 (15 = ratio 1.5)
+    ratio_max_x10: int       # D15
 
 
 @dataclass(frozen=True)
@@ -190,23 +231,47 @@ class LegacyFronbackPLC:
         return FrontbackSettings(cam1_exposure=words[0], cam2_exposure=words[1])
 
     def read_loop_block(self) -> LoopBlock | None:
-        """Block-read D1-D11 in one Modbus request: trigger, mode, frontback
-        exposures bundled together. Saves a round-trip vs separate
-        `read_trigger_and_mode` + `read_frontback_settings` calls inside the
-        LOOP, where the per-iteration savings compound.
+        """Block-read D1-D15 in one Modbus request: trigger, mode, frontback
+        exposures, and brush-head parameters bundled together. Saves
+        round-trips vs per-mode `read_*_settings` calls inside the LOOP,
+        where the per-iteration savings compound. Extending the read from
+        11 to 15 words costs ~1 ms for the wire payload but saves a full
+        round-trip whenever brush-head mode is dispatched.
 
-        D3-D9 are read as part of the contiguous span (Modbus reads must be
-        contiguous) but discarded — they're our own writes echoed back.
+        D3-D9 are read as part of the contiguous span (Modbus reads must
+        be contiguous) but discarded — they're our own writes echoed back.
         """
         with self._lock:
-            words = self.plc.read_status(REG_CAPTURE_TRIGGER, count=11)
-        if not isinstance(words, list) or len(words) < 11:
+            words = self.plc.read_status(REG_CAPTURE_TRIGGER, count=15)
+        if not isinstance(words, list) or len(words) < 15:
             return None
         return LoopBlock(
-            trigger=words[0],          # D1
-            mode=words[1],             # D2
-            cam1_exposure=words[9],    # D10
-            cam2_exposure=words[10],   # D11
+            trigger=words[0],                 # D1
+            mode=words[1],                    # D2
+            cam1_exposure=words[9],           # D10
+            cam2_exposure=words[10],          # D11
+            brush_dot_area_min=words[11],     # D12
+            brush_dot_area_max=words[12],     # D13
+            brush_ratio_min_x10=words[13],    # D14
+            brush_ratio_max_x10=words[14],    # D15
+        )
+
+    def read_brush_head_settings(self) -> BrushHeadSettings | None:
+        """Block-read D10-D15 (6 words) for the FIRE-mode brush_head path.
+
+        LOOP path uses `read_loop_block` instead so it shares the trigger
+        read; this method is only hit by the single-shot FIRE dispatch.
+        """
+        with self._lock:
+            words = self.plc.read_status(REG_CAM1_EXPOSURE, count=6)
+        if not isinstance(words, list) or len(words) < 6:
+            return None
+        return BrushHeadSettings(
+            cam1_exposure=words[0],          # D10
+            dot_area_min=words[2],           # D12
+            dot_area_max=words[3],           # D13
+            ratio_min_x10=words[4],          # D14
+            ratio_max_x10=words[5],          # D15
         )
 
     def read_height_settings(self) -> HeightSettings | None:
@@ -264,6 +329,22 @@ class LegacyFronbackPLC:
         ]
         with self._lock:
             self.plc.write_multiple_registers(REG_EDGE1_LOW, words)
+
+    def write_brush_head_result(self, dot_count: int, area: int) -> None:
+        """Write D42 (dot count) + D43 (detected area / 100) as a 2-word
+        block — used by the BRUSH_HEAD mode for diagnostic output.
+
+        Both values are clamped to uint16 range. The area is stored
+        scaled-down because typical bristle-head ROIs are 50k-500k pixels,
+        which would overflow a single 16-bit register; /100 keeps a useful
+        resolution while fitting.
+        """
+        words = [
+            max(0, min(65535, int(dot_count))),
+            max(0, min(65535, int(area) // 100)),
+        ]
+        with self._lock:
+            self.plc.write_multiple_registers(REG_BRUSH_DOT_COUNT, words)
 
     def write_height_result(self, max_y_avg: int) -> None:
         """Write D40. D41 (width result) is left at whatever PLC last wrote;

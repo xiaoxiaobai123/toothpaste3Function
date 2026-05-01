@@ -35,6 +35,7 @@ from legacy.fronback_algorithms import (
     compute_frontback_parallel,
     compute_height,
 )
+from legacy.fronback_brush_head import run_brush_head
 from legacy.fronback_display import (
     DEFAULT_PNG_PATH,
     DEFAULT_RGB565_PATH,
@@ -42,6 +43,7 @@ from legacy.fronback_display import (
     render_height,
 )
 from legacy.fronback_protocol import (
+    MODE_BRUSH_HEAD,
     MODE_FRONTBACK,
     MODE_HEIGHT,
     RESULT_BACK_OR_NG,
@@ -51,6 +53,7 @@ from legacy.fronback_protocol import (
     TRIGGER_FIRE,
     TRIGGER_IDLE,
     TRIGGER_LOOP,
+    BrushHeadSettings,
     FrontbackSettings,
     LegacyFronbackPLC,
 )
@@ -175,6 +178,8 @@ class LegacyFronbackOrchestrator:
             await self._do_frontback()
         elif mode == MODE_HEIGHT:
             await self._do_height()
+        elif mode == MODE_BRUSH_HEAD:
+            await self._do_brush_head()
         else:
             self.logger.warning(f"[Legacy] unknown mode D2={mode}, skipping")
 
@@ -225,6 +230,16 @@ class LegacyFronbackOrchestrator:
                     await self._do_frontback(preread_settings=preread)
                 elif block.mode == MODE_HEIGHT:
                     await self._do_height()
+                elif block.mode == MODE_BRUSH_HEAD:
+                    # Reuse D10 + D12-D15 already in the loop block.
+                    preread_brush = BrushHeadSettings(
+                        cam1_exposure=block.cam1_exposure,
+                        dot_area_min=block.brush_dot_area_min,
+                        dot_area_max=block.brush_dot_area_max,
+                        ratio_min_x10=block.brush_ratio_min_x10,
+                        ratio_max_x10=block.brush_ratio_max_x10,
+                    )
+                    await self._do_brush_head(preread_settings=preread_brush)
                 else:
                     self.logger.warning(
                         f"[Legacy] LOOP: unknown mode D2={block.mode}, skipping cycle"
@@ -359,6 +374,63 @@ class LegacyFronbackOrchestrator:
             asyncio.to_thread(self._render_height_display, img),
         )
 
+    # ----------------------------------------------------------- brush_head
+
+    async def _do_brush_head(
+        self, preread_settings: BrushHeadSettings | None = None
+    ) -> None:
+        """Single-camera (cam1) brush-head detection using the v2 algorithm.
+
+        Mirrors the _do_height shape: read settings, apply exposure, capture,
+        run algorithm via the brush_head adapter, write D0 + D42/D43 + render.
+        Defaults for any PLC slot left at 0 come from
+        config.json:legacy_brush_head_defaults — see core/config_manager.py.
+        """
+        if preread_settings is not None:
+            settings = preread_settings
+        else:
+            settings = await asyncio.to_thread(self.plc.read_brush_head_settings)
+            if settings is None:
+                self.logger.error("[Legacy] brush_head: failed to read settings")
+                return
+
+        await self._apply_exposure_if_changed(1, settings.cam1_exposure)
+        img = await asyncio.to_thread(self.cam.capture_image, 1)
+        await asyncio.to_thread(self.plc.write_camera_status, 1, img is not None)
+
+        if img is None:
+            self.logger.error("[Legacy] brush_head skipped: cam1 offline")
+            return
+
+        defaults = self._brush_head_defaults()
+        cycle = await asyncio.to_thread(run_brush_head, img, settings, defaults)
+
+        self.logger.info(
+            f"[Legacy] brush_head: D0={cycle.plc_result} "
+            f"dot_count={cycle.dot_count} area={cycle.area}"
+        )
+
+        await asyncio.gather(
+            asyncio.to_thread(self.plc.write_recognition_result, cycle.plc_result),
+            asyncio.to_thread(
+                self.plc.write_brush_head_result, cycle.dot_count, cycle.area
+            ),
+            asyncio.to_thread(self._render_brush_head_display, cycle.display_image),
+        )
+
+    def _brush_head_defaults(self) -> dict:
+        """Pull legacy brush-head defaults from the config singleton.
+
+        Wrapped in a method so tests can monkeypatch this on the
+        orchestrator instance instead of the singleton (avoids leaking
+        test-only config into other tests via shared module state).
+        """
+        # Local import: orchestrator is imported at module load time on
+        # NanoPi, before config.json existence checks pass. Keep config
+        # access lazy to mirror how the rest of the codebase handles it.
+        from core.config_manager import config
+        return config.get_legacy_brush_head_defaults()
+
     # -------------------------------------------------------------- helpers
 
     def _render_frontback_display(
@@ -391,6 +463,17 @@ class LegacyFronbackOrchestrator:
             render_height(image, self.png_path, self.rgb565_path)
         except Exception as e:
             self.logger.error(f"[Legacy] display render failed: {e}")
+
+    def _render_brush_head_display(self, image: np.ndarray) -> None:
+        """BrushHeadProcessor returns its own visualization image (with ROI
+        rectangle, dot overlays, side label) — we just need to fit it to
+        the framebuffer and ship it through the same single-camera render
+        path height uses.
+        """
+        try:
+            render_height(image, self.png_path, self.rgb565_path)
+        except Exception as e:
+            self.logger.error(f"[Legacy] brush_head display render failed: {e}")
 
     async def _apply_exposure_if_changed(self, camera_num: int, exposure: int) -> None:
         if exposure <= 0:

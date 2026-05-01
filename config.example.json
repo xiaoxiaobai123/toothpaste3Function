@@ -24,5 +24,14 @@
 
     "plc": {
         "ip": "192.168.1.10"
+    },
+
+    "_comment_legacy_brush_head": "Defaults for legacy_fronback D2=2 (BRUSH_HEAD) mode. PLC writing 0 to D12-D15 means 'use these values'. Non-zero PLC writes override per cycle. Only relevant when plc_protocol == 'legacy_fronback' AND the customer's PLC ladder dispatches D2=2.",
+    "legacy_brush_head_defaults": {
+        "exposure": 5000,
+        "dot_area_min": 20,
+        "dot_area_max": 500,
+        "ratio_min": 1.5,
+        "ratio_max": 3.5
     }
 }

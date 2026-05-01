@@ -353,10 +353,13 @@ PLC 侧                              视觉机侧
 | D 地址 | 类型 | 名称 | 用途 |
 |:-:|:-:|:--|:--|
 | `D1` | uint16 | capture_trigger | 写 10 触发拍照,视觉处理完写回 0/1 |
-| `D2` | uint16 | workcamera_count | **模式开关**:1=双相机正反, 0=单相机高度 |
-| `D10` | uint16 | cam1_exposure | 正反模式下 cam1 曝光(微秒) |
+| `D2` | uint16 | workcamera_count | **模式开关**:1=双相机正反, 0=单相机高度, 2=单相机牙刷头(v0.3.14+) |
+| `D10` | uint16 | cam1_exposure | 正反模式 cam1 曝光(微秒);牙刷头模式同样用此寄存器 |
 | `D11` | uint16 | cam2_exposure | 正反模式下 cam2 曝光(微秒) |
-| ~~`D12-13`~~ | ~~uint32~~ | ~~unrecognized_threshold~~ | **新版不再读取**,见 §L.4 |
+| `D12` | uint16 | brush_dot_area_min | **牙刷头模式**最小斑点面积;0 = 用 config.json 默认 |
+| `D13` | uint16 | brush_dot_area_max | 牙刷头模式最大斑点面积;0 = 默认 |
+| `D14` | uint16 | brush_ratio_min × 10 | 牙刷头 ROI 长短边比下限 ×10(15 = 1.5);0 = 默认 |
+| `D15` | uint16 | brush_ratio_max × 10 | 牙刷头 ROI 长短边比上限 ×10;0 = 默认 |
 | `D30` | uint16 | height_cam2_exposure | 高度模式下 cam2 曝光 |
 | `D31` | uint16 | brightness_threshold | 高度模式亮度阈值(0-255) |
 | `D32` | uint16 | min_height | 高度模式最低有效 Y |
@@ -377,6 +380,8 @@ PLC 侧                              视觉机侧
 | `D22-D23` | uint32(LE 字序) | edge2_count | 正反模式 cam2 边缘像素数 |
 | `D40` | uint16 | height_result | 高度模式 top-10 列最大Y平均 |
 | `D41` | uint16 | width_result | 占位,目前不写 |
+| `D42` | uint16 | brush_dot_count | **牙刷头模式**检测到的斑点数(诊断用,可不读)|
+| `D43` | uint16 | brush_area_x100 | 牙刷头检测 ROI 面积 ÷ 100(诊断用) |
 
 ## L.2 标准操作时序
 
@@ -427,6 +432,37 @@ PLC                                   视觉机
  │                                      │
  │ ④ 监 D1 == 1 → 读 D0 + D40             │
 ```
+
+### 单相机牙刷头 (D2=2,v0.3.14+)
+
+> **可选 mode**:复用 v2 的 BrushHeadProcessor 算法。客户 PLC ladder 必须显式 dispatch D2=2,但**算法参数全部可选**——D12-D15 写 0 时使用 `config.json:legacy_brush_head_defaults` 段的值。
+
+```
+PLC                                   视觉机
+ │                                      │
+ │ ① 配 D10 cam1 曝光(必)               │
+ │   D12-D15 算法参数(可选;0=默认)     │
+ │ ② D2 = 2 (牙刷头模式)                 │
+ │ ③ D1 = 10 (触发,或 D1=11 进 LOOP)     │
+ │ ───────────────────────────────►    │
+ │                                      │ 块读 D1-D15 (LOOP 一次)
+ │                                      │ 写 D1 = 0
+ │ ◄───────────────────────────────    │
+ │                                      │ 设 cam1 曝光,采 cam1
+ │                                      │ 自动检测 dot 凸包 + 长短边比验证
+ │                                      │ result = 1 (OK 含 Front/Back) / 2 (NG)
+ │                                      │ 并行写 D0, D3, D42, D43
+ │                                      │ 写 D1 = 1 (FIRE 模式) / 不写 D1 (LOOP)
+ │ ◄───────────────────────────────    │
+ │                                      │
+ │ ④ 监 D1 == 1 → 读 D0                  │
+ │   读 D42/D43 取诊断信息(可选)        │
+```
+
+**双轨参数策略**:
+- 客户 PLC 完全不改 D12-D15 → 全部走 `config.json` 默认值。**最小 PLC 改动 = 加一行 D2=2 dispatch**。
+- 客户 PLC 写非 0 到某个 D12-D15 → 该参数走 PLC,其他仍走默认值。**渐进式精细控制**。
+- 全部 D12-D15 写非 0 → 完全 PLC 控制,跟 frontback / height 一致。
 
 ## L.3 与原 fronback 程序的差异(全部不影响 PLC 行为)
 

@@ -123,6 +123,31 @@ class ConfigManager:
         value = self.config.get("plc_protocol", "v2_unified")
         return value if value in {"v2_unified", "legacy_fronback"} else "v2_unified"
 
+    # ------------------------------------------------------------------
+    # Legacy brush-head defaults (D2=2 mode parameters that PLC didn't write)
+    # ------------------------------------------------------------------
+    def get_legacy_brush_head_defaults(self) -> dict[str, Any]:
+        """Defaults applied when PLC writes 0 to a brush-head parameter.
+
+        Lets `legacy_fronback` brush_head mode work without the customer
+        adding brush params to their PLC ladder right away — they just
+        write D2=2 to trigger and we use config.json (or hardcoded
+        sensible values) for everything else. Each non-zero PLC word
+        overrides the matching default per cycle (see
+        `legacy/fronback_brush_head._merge_with_defaults`).
+
+        Numeric coercion is forgiving so a stray string like "1.5" in
+        the config file still works.
+        """
+        cfg = self.config.get("legacy_brush_head_defaults", {})
+        return {
+            "exposure": int(cfg.get("exposure", 5000)),
+            "dot_area_min": int(cfg.get("dot_area_min", 20)),
+            "dot_area_max": int(cfg.get("dot_area_max", 500)),
+            "ratio_min": float(cfg.get("ratio_min", 1.5)),
+            "ratio_max": float(cfg.get("ratio_max", 3.5)),
+        }
+
 
 # Module-level singleton, mirroring the original display layout.
 config = ConfigManager()

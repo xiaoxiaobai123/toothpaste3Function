@@ -500,6 +500,72 @@ async def test_loop_honors_mid_loop_mode_change(
 
 
 @pytest.mark.asyncio
+async def test_brush_head_d2_2_dispatches_brushhead_processor(
+    cam_dir: tuple[Path, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D2=2 + D1=10 → orchestrator routes through brush_head adapter:
+    writes D0 + D42/D43, runs single-camera (cam1), writes display sink.
+
+    Mock image is synthetic (no real bristle dots), so BrushHeadProcessor
+    will return NG — but that still exercises the full dispatch path and
+    PLC writes, which is what this test asserts. Algorithm correctness
+    on real bristle images is covered by tests/unit/test_brush_head.
+    """
+    d1, _ = cam_dir
+    plc = ScriptedPLC()
+    plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_FIRE
+    plc.regs[2] = 2  # MODE_BRUSH_HEAD
+    plc.regs[10] = 5000  # cam1 exposure (D10)
+    # D12-D15 left at 0 → use defaults via brush_head adapter
+
+    # Stub the orchestrator's defaults provider so the test doesn't need a
+    # real config.json on disk.
+    from legacy.fronback_orchestrator import LegacyFronbackOrchestrator
+    monkeypatch.setattr(
+        LegacyFronbackOrchestrator, "_brush_head_defaults",
+        lambda self: {
+            "exposure": 5000, "dot_area_min": 20, "dot_area_max": 500,
+            "ratio_min": 1.5, "ratio_max": 3.5,
+        },
+    )
+
+    legacy_plc = LegacyFronbackPLC(plc_base=plc)
+    cam = MockCameraManager({1: d1})  # single-cam, cam1 only
+    roi = make_file_roi_provider(cam, base_dir=tmp_path, logger=_logger())
+
+    png_path = tmp_path / "processed_image.png"
+    rgb565_path = tmp_path / "output_image.rgb565"
+    orchestrator = LegacyFronbackOrchestrator(
+        legacy_plc, cam, roi, _logger(),
+        png_path=png_path, rgb565_path=rgb565_path,
+    )
+    task = asyncio.create_task(orchestrator.run())
+
+    deadline = asyncio.get_event_loop().time() + 3.0
+    while asyncio.get_event_loop().time() < deadline:
+        d0_done = any(addr == REG_RECOGNITION_RESULT for addr, _ in plc.writes)
+        d42_done = any(addr == 42 for addr, _ in plc.writes)
+        if d0_done and d42_done and rgb565_path.is_file():
+            break
+        await asyncio.sleep(0.05)
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    addrs_written = [addr for addr, _ in plc.writes]
+    assert REG_RECOGNITION_RESULT in addrs_written, "D0 not written for brush_head"
+    assert 42 in addrs_written, "D42/D43 brush diagnostic block not written"
+    # D3 cam1 status should be written (we touched cam1).
+    assert REG_CAM1_STATUS in addrs_written
+    # Frontback / height results MUST NOT be written by brush_head mode.
+    assert REG_EDGE1_LOW not in addrs_written, "edge counts shouldn't appear in brush_head"
+    assert REG_HEIGHT_RESULT not in addrs_written, "height result shouldn't appear in brush_head"
+    # Display sinks written so operator screen updates.
+    assert rgb565_path.is_file(), "rgb565 sink should be written by brush_head mode"
+
+
+@pytest.mark.asyncio
 async def test_no_capture_when_trigger_idle(cam_dir: tuple[Path, Path], tmp_path: Path) -> None:
     """If D1 != 10 throughout, no D0 / edge writes happen."""
     d1, d2 = cam_dir
