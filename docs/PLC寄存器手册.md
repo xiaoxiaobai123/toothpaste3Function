@@ -363,8 +363,8 @@ PLC 侧                              视觉机侧
 | `D30` | uint16 | height_cam2_exposure | 高度模式下 cam2 曝光 |
 | `D31` | uint16 | brightness_threshold | 高度模式亮度阈值(0-255) |
 | `D32` | uint16 | min_height | 高度模式最低有效 Y |
-| `D33` | uint16 | left_limit | 读但不用(协议保持) |
-| `D34` | uint16 | right_limit | 读但不用(协议保持) |
+| `D33` | uint16 | left_limit | 高度模式列检测 ROI 左边界(0=不限);v0.3.15+ 已生效 |
+| `D34` | uint16 | right_limit | 高度模式列检测 ROI 右边界(0=不限);v0.3.15+ 已生效 |
 | `D35` | uint16 | height_comparison | 高度模式判定阈值 |
 | `D36` | uint16 | width_comparison | 读但不用(协议保持) |
 
@@ -432,6 +432,11 @@ PLC                                   视觉机
  │                                      │
  │ ④ 监 D1 == 1 → 读 D0 + D40             │
 ```
+
+**屏幕显示叠加(v0.3.15+)**:操作员屏上的 cam2 帧会叠加三种 overlay,所有 overlay 在对应 PLC 字段为 0 时不绘制(byte-compat 默认):
+- **黄色矩形竖带**:D33 ~ D34 之间 = 列检测 ROI(让操作员看到算法在哪里测高度)
+- **红色水平线**:y = D35 = 判定阈值(高于线 → NG;低于 → OK)
+- **蓝色短竖线**:top-10 列的 max_y 位置(算法实际取了哪些列做平均)
 
 ### 单相机牙刷头 (D2=2,v0.3.14+)
 

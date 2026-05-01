@@ -51,6 +51,19 @@ class FrontbackResult:
 
 
 @dataclass(frozen=True)
+class TopColumn:
+    """One column from the top-N max-Y group used in the height average.
+
+    x is the column index in **full image coordinates** (already offset
+    by left_limit when an ROI was supplied to compute_height), so the
+    display layer can draw markers without re-offsetting.
+    """
+
+    x: int
+    max_y: int
+
+
+@dataclass(frozen=True)
 class HeightResult:
     """Output of the single-camera height check.
 
@@ -58,10 +71,15 @@ class HeightResult:
     column above min_height). Mirrors the original 1/2/3 codes that
     customers' PLCs already interpret.
     max_y_avg: top-N column max-Y average, written to D40.
+    top_columns: per-column (x, max_y) for the N columns that contributed
+        to the average — used by the display layer to highlight which
+        columns the algorithm picked. Tuple (immutable) of length 0..N.
+        Default empty so existing callers and tests don't have to change.
     """
 
     state: int
     max_y_avg: int
+    top_columns: tuple[TopColumn, ...] = ()
 
 
 # --------------------------------------------------------------------------- #
@@ -141,23 +159,51 @@ def compute_height(
     brightness_threshold: int,
     min_height: int,
     height_comparison: int,
+    left_limit: int = 0,
+    right_limit: int = 0,
 ) -> HeightResult:
     """Single-channel column max-Y averaging, matching the original.
 
     Pipeline (from HeightBasedImageProcessor.process_and_analyze_image):
         1. Take the **red** channel (`image[:, :, 2]` for BGR storage).
-        2. mask = channel > brightness_threshold (255 / 0).
-        3. For each column, find the largest Y where mask == 255.
-        4. If no column reaches min_height: state = 3 (EMPTY), avg = 0.
-        5. Otherwise: average of the top-10 largest max-Y values.
-        6. avg >= height_comparison → state = 2 (NG/overfill);
+        2. Optional: crop columns to [left_limit, right_limit) before mask.
+        3. mask = channel > brightness_threshold (255 / 0).
+        4. For each column, find the largest Y where mask == 255.
+        5. If no column reaches min_height: state = 3 (EMPTY), avg = 0.
+        6. Otherwise: average of the top-10 largest max-Y values.
+        7. avg >= height_comparison → state = 2 (NG/overfill);
            else                     → state = 1 (OK).
+
+    `left_limit` / `right_limit` correspond to PLC D33 / D34. The
+    original toothpastefronback program read those words then never used
+    them (verified in `_sources/fronback/HeightBasedImageProcessor.py` —
+    it accepted only threshold + threshold_value + height_value). We honor
+    them here as an additive backward-compat extension: when both are 0
+    (default), behaviour is byte-identical to the original; when set, the
+    column scan is restricted to [left_limit, right_limit), filtering out
+    edge-of-frame reflections that previously inflated max_y_avg.
+
+    `top_columns` in the result reports the (x, max_y) pairs that fed the
+    average — the display layer uses this to highlight which columns the
+    algorithm picked, so the operator can verify the height judgement
+    visually. Empty tuple for state==3 (no average computed).
     """
     if image.ndim != 3 or image.shape[2] < 3:
         return HeightResult(state=3, max_y_avg=0)
 
     channel = image[:, :, HEIGHT_CHANNEL_INDEX]
-    mask = (channel > brightness_threshold).astype(np.uint8) * 255
+    h_full, w_full = channel.shape
+
+    # ROI crop (D33/D34). 0 = no limit. Inverted/empty range falls back to
+    # full frame so a misconfigured PLC value can't silently disable height
+    # detection (preferable to reporting EMPTY on every frame).
+    x_start = max(0, int(left_limit))
+    x_end = min(w_full, int(right_limit)) if right_limit > 0 else w_full
+    if x_end <= x_start:
+        x_start, x_end = 0, w_full
+    cropped = channel[:, x_start:x_end]
+
+    mask = (cropped > brightness_threshold).astype(np.uint8) * 255
 
     # Per-column maximum Y where mask is set. Vectorised replacement for
     # the original's per-column np.where(...) loop.
@@ -174,11 +220,19 @@ def compute_height(
     if not np.any(max_y_per_col > min_height):
         return HeightResult(state=3, max_y_avg=0)
 
-    # Top-N largest max-Y values, averaged. np.partition is O(N) instead
-    # of O(N log N) for sorting all columns just to take the top 10.
+    # Top-N largest max-Y values, averaged. np.argpartition gives us the
+    # indices of the top-N (O(N)) so we can also report which columns
+    # contributed to top_columns.
     n = min(TOP_N_HEIGHT_COLUMNS, max_y_per_col.size)
-    top_n = np.partition(max_y_per_col, -n)[-n:]
-    avg = int(round(float(np.mean(top_n))))
+    top_idx = np.argpartition(max_y_per_col, -n)[-n:]
+    top_max_ys = max_y_per_col[top_idx]
+    avg = int(round(float(np.mean(top_max_ys))))
+
+    # Translate back to full-image x coordinates so the display layer can
+    # draw markers on the original frame regardless of any ROI crop.
+    top_columns = tuple(
+        TopColumn(x=int(idx) + x_start, max_y=int(my)) for idx, my in zip(top_idx, top_max_ys, strict=True)
+    )
 
     state = 2 if avg >= height_comparison else 1
-    return HeightResult(state=state, max_y_avg=avg)
+    return HeightResult(state=state, max_y_avg=avg, top_columns=top_columns)

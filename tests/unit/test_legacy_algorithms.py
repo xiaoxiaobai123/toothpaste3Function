@@ -170,3 +170,92 @@ def test_height_grayscale_input_returns_empty_gracefully() -> None:
     gray = np.full((500, 600), 200, dtype=np.uint8)
     result = compute_height(gray, brightness_threshold=100, min_height=50, height_comparison=300)
     assert result.state == 3
+
+
+# ----------------------------------------------------------------------
+# Height — left/right limit (D33/D34) and top_columns (v0.3.15+)
+# ----------------------------------------------------------------------
+def test_height_returns_top_columns_with_full_image_x_coords() -> None:
+    """top_columns lengths up to TOP_N (10) and uses full-image x coords."""
+    img = _height_image(fill_top_y=100, fill_bottom_y=250)
+    result = compute_height(img, brightness_threshold=100, min_height=50, height_comparison=300)
+    assert result.state == 1
+    assert 1 <= len(result.top_columns) <= 10
+    # All x coords inside image, max_y is the bottom of the fill (~249).
+    for col in result.top_columns:
+        assert 0 <= col.x < 600
+        assert 240 <= col.max_y <= 260
+
+
+def test_height_default_zero_limits_match_full_frame_behaviour() -> None:
+    """left=right=0 → byte-identical to original (no ROI crop)."""
+    img = _height_image(fill_top_y=100, fill_bottom_y=250)
+    full = compute_height(img, brightness_threshold=100, min_height=50, height_comparison=300)
+    explicit_zero = compute_height(
+        img,
+        brightness_threshold=100,
+        min_height=50,
+        height_comparison=300,
+        left_limit=0,
+        right_limit=0,
+    )
+    assert full.state == explicit_zero.state
+    assert full.max_y_avg == explicit_zero.max_y_avg
+
+
+def test_height_roi_filters_out_left_edge_signal() -> None:
+    """A bright stripe only on the LEFT third — ROI starts past it (left_limit
+    moves the start of detection right) → algorithm sees no signal → state 3."""
+    img = np.zeros((500, 600, 3), dtype=np.uint8)
+    img[100:250, 0:200, HEIGHT_CHANNEL_INDEX] = 200  # left third only
+    # Without ROI: signal detected.
+    no_roi = compute_height(img, brightness_threshold=100, min_height=50, height_comparison=300)
+    assert no_roi.state == 1  # signal present
+    # With ROI starting at x=300: filtered out.
+    with_roi = compute_height(
+        img,
+        brightness_threshold=100,
+        min_height=50,
+        height_comparison=300,
+        left_limit=300,
+        right_limit=600,
+    )
+    assert with_roi.state == 3
+    assert with_roi.max_y_avg == 0
+
+
+def test_height_roi_top_columns_translated_to_full_image_x() -> None:
+    """When ROI offset is set, returned top_columns x must be in FULL image
+    coordinates (not the cropped sub-image)."""
+    img = np.zeros((500, 600, 3), dtype=np.uint8)
+    img[100:250, 350:450, HEIGHT_CHANNEL_INDEX] = 200  # signal at x=350..449
+    result = compute_height(
+        img,
+        brightness_threshold=100,
+        min_height=50,
+        height_comparison=300,
+        left_limit=300,
+        right_limit=500,
+    )
+    assert result.state == 1
+    # Every reported column is in the original signal range, NOT [0..200) of
+    # the sub-image — verifies translation.
+    for col in result.top_columns:
+        assert 350 <= col.x < 450
+
+
+def test_height_inverted_limits_fall_back_to_full_frame() -> None:
+    """Misconfigured PLC with right < left should NOT silently disable
+    height detection — fall back to scanning full frame."""
+    img = _height_image(fill_top_y=100, fill_bottom_y=250)
+    result = compute_height(
+        img,
+        brightness_threshold=100,
+        min_height=50,
+        height_comparison=300,
+        left_limit=400,
+        right_limit=200,  # inverted
+    )
+    # Same outcome as no ROI at all.
+    assert result.state == 1
+    assert 240 <= result.max_y_avg <= 260

@@ -74,6 +74,7 @@ def test_frontback_dimensions_match_original_layout(tmp_path: Path) -> None:
     expected_panel_h = 541
     try:
         from processing.display_utils import _get_company_bar
+
         bar_h = _get_company_bar(w).shape[0]
         expected_h = expected_panel_h + bar_h
     except Exception:
@@ -240,9 +241,7 @@ def test_compose_frontback_includes_company_bar_at_top() -> None:
 
     # First bar_h rows of composed should be the company banner verbatim.
     top_strip = composed[:bar_h]
-    assert top_strip.shape == bar.shape, (
-        f"top strip {top_strip.shape} != bar {bar.shape}"
-    )
+    assert top_strip.shape == bar.shape, f"top strip {top_strip.shape} != bar {bar.shape}"
     assert np.array_equal(top_strip, bar), "top of composed image is not the company banner"
 
 
@@ -258,7 +257,9 @@ def test_compose_frontback_draws_roi_when_provided() -> None:
 
     baseline = compose_frontback(img, img, is_front=True)
     with_roi = compose_frontback(
-        img, img, is_front=True,
+        img,
+        img,
+        is_front=True,
         roi1={"x1": 100, "y1": 80, "x2": 540, "y2": 400},
         roi2={"x1": 100, "y1": 80, "x2": 540, "y2": 400},
     )
@@ -273,8 +274,7 @@ def test_compose_frontback_draws_roi_when_provided() -> None:
     base_yellow = yellow_pixel_count(baseline)
     roi_yellow = yellow_pixel_count(with_roi)
     assert roi_yellow > base_yellow + 100, (
-        f"expected significant yellow pixels for ROI overlay, "
-        f"baseline={base_yellow}, with_roi={roi_yellow}"
+        f"expected significant yellow pixels for ROI overlay, baseline={base_yellow}, with_roi={roi_yellow}"
     )
 
 
@@ -284,7 +284,9 @@ def test_compose_frontback_skips_roi_when_camera_offline() -> None:
     img = _solid(640, 480, (180, 180, 180))
     # cam1 offline, cam2 has ROI
     composed = compose_frontback(
-        None, img, is_front=False,
+        None,
+        img,
+        is_front=False,
         roi1={"x1": 100, "y1": 80, "x2": 540, "y2": 400},
         roi2={"x1": 100, "y1": 80, "x2": 540, "y2": 400},
     )
@@ -312,7 +314,7 @@ def test_compose_frontback_handles_missing_cam1() -> None:
 
     # Compare panel-wide brightness rather than spot pixels (would collide
     # with the green crosshair or text strokes).
-    left_panel = composed[:, : w // 2 - 2]   # exclude central white separator
+    left_panel = composed[:, : w // 2 - 2]  # exclude central white separator
     right_panel = composed[:, w // 2 + 2 :]
     assert left_panel.mean() < right_panel.mean() - 80, (
         f"left panel should be dark OFFLINE placeholder; got "
@@ -339,9 +341,7 @@ def test_compose_frontback_handles_both_missing() -> None:
     assert isinstance(composed, np.ndarray)
     # The composition is dominated by black placeholder pixels; allow
     # plenty of slack for white borders / red title text / hint text.
-    assert composed.mean() < 60, (
-        "both-offline composition should be dominated by dark placeholder"
-    )
+    assert composed.mean() < 60, "both-offline composition should be dominated by dark placeholder"
 
 
 def test_compose_frontback_uses_loser_color_when_one_offline() -> None:
@@ -380,3 +380,69 @@ def test_render_frontback_writes_when_cam1_missing(tmp_path: Path) -> None:
     data = out_rgb565.read_bytes()
     width, height = struct.unpack("<ii", data[:8])
     assert width > 0 and height > 0
+
+
+# --------------------------------------------------------------------------- #
+# Height overlays (v0.3.15+): ROI band + threshold line + top-N markers
+# --------------------------------------------------------------------------- #
+from legacy.fronback_algorithms import TopColumn  # noqa: E402
+from legacy.fronback_display import _draw_height_overlays  # noqa: E402
+
+
+def test_height_overlay_no_args_returns_image_unchanged_object() -> None:
+    """When no overlays are requested, return the SAME array object —
+    avoids a needless copy in the byte-compat default path."""
+    img = _solid(800, 600, (50, 50, 50))
+    out = _draw_height_overlays(img, left_limit=0, right_limit=0, comparison=0, top_columns=())
+    assert out is img
+
+
+def test_height_overlay_roi_paints_yellow_rectangle_band() -> None:
+    """ROI rect (D33/D34) — yellow (BGR 0,255,255)."""
+    img = _solid(800, 600, (10, 10, 10))
+    out = _draw_height_overlays(img, left_limit=200, right_limit=600, comparison=0, top_columns=())
+    assert out is not img  # mutated copy
+    # The ROI border should appear at x=200 and x=600. Sample a known
+    # pixel along each edge.
+    assert tuple(int(c) for c in out[10, 200]) == (0, 255, 255)
+    assert tuple(int(c) for c in out[10, 600]) == (0, 255, 255)
+
+
+def test_height_overlay_threshold_paints_red_horizontal_line() -> None:
+    """Threshold (D35) — red horizontal line at y=comparison."""
+    img = _solid(800, 600, (10, 10, 10))
+    out = _draw_height_overlays(img, left_limit=0, right_limit=0, comparison=350, top_columns=())
+    assert out is not img
+    # Center of red line must be red (BGR 0,0,255).
+    assert tuple(int(c) for c in out[350, 400]) == (0, 0, 255)
+
+
+def test_height_overlay_top_columns_paint_blue_short_ticks() -> None:
+    """Each TopColumn yields a short blue vertical tick around (x, max_y)."""
+    img = _solid(800, 600, (10, 10, 10))
+    cols = (TopColumn(x=300, max_y=400), TopColumn(x=500, max_y=350))
+    out = _draw_height_overlays(img, left_limit=0, right_limit=0, comparison=0, top_columns=cols)
+    assert out is not img
+    # Both tick centers should be blue (BGR 255,80,0).
+    assert tuple(int(c) for c in out[400, 300]) == (255, 80, 0)
+    assert tuple(int(c) for c in out[350, 500]) == (255, 80, 0)
+
+
+def test_height_overlay_clamps_out_of_bounds_top_columns() -> None:
+    """A TopColumn with x past the image width must not raise."""
+    img = _solid(400, 300, (10, 10, 10))
+    cols = (TopColumn(x=999, max_y=200), TopColumn(x=-50, max_y=200))
+    # Should silently skip the OOB columns.
+    _draw_height_overlays(img, left_limit=0, right_limit=0, comparison=0, top_columns=cols)
+    # No assertion needed — the test passes by NOT raising.
+
+
+def test_height_overlay_invalid_roi_does_not_paint() -> None:
+    """left=right or right=0 → no ROI rect drawn."""
+    img = _solid(800, 600, (10, 10, 10))
+    # right=0: don't paint.
+    out = _draw_height_overlays(img, left_limit=200, right_limit=0, comparison=0, top_columns=())
+    assert out is img  # nothing to draw → unchanged
+    # right == left: don't paint.
+    out2 = _draw_height_overlays(img, left_limit=300, right_limit=300, comparison=0, top_columns=())
+    assert out2 is img

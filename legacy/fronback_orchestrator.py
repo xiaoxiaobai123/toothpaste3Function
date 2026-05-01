@@ -241,9 +241,7 @@ class LegacyFronbackOrchestrator:
                     )
                     await self._do_brush_head(preread_settings=preread_brush)
                 else:
-                    self.logger.warning(
-                        f"[Legacy] LOOP: unknown mode D2={block.mode}, skipping cycle"
-                    )
+                    self.logger.warning(f"[Legacy] LOOP: unknown mode D2={block.mode}, skipping cycle")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -287,9 +285,7 @@ class LegacyFronbackOrchestrator:
 
         # Report camera status to PLC — single block-write of D3+D4 instead
         # of two separate single-register writes (one round-trip vs two).
-        await asyncio.to_thread(
-            self.plc.write_camera_statuses, img1 is not None, img2 is not None
-        )
+        await asyncio.to_thread(self.plc.write_camera_statuses, img1 is not None, img2 is not None)
 
         # Compute ROIs upfront so both the algorithm AND the display
         # (including the OFFLINE-camera path) can see them.
@@ -307,9 +303,7 @@ class LegacyFronbackOrchestrator:
             # left untouched — `is_front` is a don't-care for the placeholder
             # path (compose_frontback ignores it when one image is None).
             # Pass ROIs so the present camera still shows its ROI overlay.
-            await asyncio.to_thread(
-                self._render_frontback_display, img1, img2, False, roi1, roi2
-            )
+            await asyncio.to_thread(self._render_frontback_display, img1, img2, False, roi1, roi2)
             return
 
         # Run the two per-camera Sobel computations concurrently in worker
@@ -329,9 +323,7 @@ class LegacyFronbackOrchestrator:
         await asyncio.gather(
             asyncio.to_thread(self.plc.write_recognition_result, d0_value),
             asyncio.to_thread(self.plc.write_edge_counts, result.edge1_count, result.edge2_count),
-            asyncio.to_thread(
-                self._render_frontback_display, img1, img2, result.is_front, roi1, roi2
-            ),
+            asyncio.to_thread(self._render_frontback_display, img1, img2, result.is_front, roi1, roi2),
         )
 
     # -------------------------------------------------------------- height
@@ -356,6 +348,8 @@ class LegacyFronbackOrchestrator:
             settings.brightness_threshold,
             settings.min_height,
             settings.height_comparison,
+            settings.left_limit,
+            settings.right_limit,
         )
 
         # Map the algorithm's state back to the PLC code (already aligned).
@@ -371,14 +365,19 @@ class LegacyFronbackOrchestrator:
         await asyncio.gather(
             asyncio.to_thread(self.plc.write_recognition_result, d0_value),
             asyncio.to_thread(self.plc.write_height_result, result.max_y_avg),
-            asyncio.to_thread(self._render_height_display, img),
+            asyncio.to_thread(
+                self._render_height_display,
+                img,
+                left_limit=settings.left_limit,
+                right_limit=settings.right_limit,
+                comparison=settings.height_comparison,
+                top_columns=result.top_columns,
+            ),
         )
 
     # ----------------------------------------------------------- brush_head
 
-    async def _do_brush_head(
-        self, preread_settings: BrushHeadSettings | None = None
-    ) -> None:
+    async def _do_brush_head(self, preread_settings: BrushHeadSettings | None = None) -> None:
         """Single-camera (cam1) brush-head detection using the v2 algorithm.
 
         Mirrors the _do_height shape: read settings, apply exposure, capture,
@@ -406,15 +405,12 @@ class LegacyFronbackOrchestrator:
         cycle = await asyncio.to_thread(run_brush_head, img, settings, defaults)
 
         self.logger.info(
-            f"[Legacy] brush_head: D0={cycle.plc_result} "
-            f"dot_count={cycle.dot_count} area={cycle.area}"
+            f"[Legacy] brush_head: D0={cycle.plc_result} dot_count={cycle.dot_count} area={cycle.area}"
         )
 
         await asyncio.gather(
             asyncio.to_thread(self.plc.write_recognition_result, cycle.plc_result),
-            asyncio.to_thread(
-                self.plc.write_brush_head_result, cycle.dot_count, cycle.area
-            ),
+            asyncio.to_thread(self.plc.write_brush_head_result, cycle.dot_count, cycle.area),
             asyncio.to_thread(self._render_brush_head_display, cycle.display_image),
         )
 
@@ -429,6 +425,7 @@ class LegacyFronbackOrchestrator:
         # NanoPi, before config.json existence checks pass. Keep config
         # access lazy to mirror how the rest of the codebase handles it.
         from core.config_manager import config
+
         return config.get_legacy_brush_head_defaults()
 
     # -------------------------------------------------------------- helpers
@@ -451,16 +448,39 @@ class LegacyFronbackOrchestrator:
         """
         try:
             render_frontback(
-                img1, img2, is_front,
-                self.png_path, self.rgb565_path,
-                roi1=roi1, roi2=roi2,
+                img1,
+                img2,
+                is_front,
+                self.png_path,
+                self.rgb565_path,
+                roi1=roi1,
+                roi2=roi2,
             )
         except Exception as e:
             self.logger.error(f"[Legacy] display render failed: {e}")
 
-    def _render_height_display(self, image: np.ndarray) -> None:
+    def _render_height_display(
+        self,
+        image: np.ndarray,
+        *,
+        left_limit: int = 0,
+        right_limit: int = 0,
+        comparison: int = 0,
+        top_columns: tuple = (),
+    ) -> None:
+        """Forward overlays through to render_height. Defaults match the
+        original raw-frame behaviour for any caller that doesn't pass
+        them (existing tests, manual invocations from REPL, etc.)."""
         try:
-            render_height(image, self.png_path, self.rgb565_path)
+            render_height(
+                image,
+                self.png_path,
+                self.rgb565_path,
+                left_limit=left_limit,
+                right_limit=right_limit,
+                comparison=comparison,
+                top_columns=top_columns,
+            )
         except Exception as e:
             self.logger.error(f"[Legacy] display render failed: {e}")
 

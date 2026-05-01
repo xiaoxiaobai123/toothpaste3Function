@@ -57,6 +57,7 @@ def _maybe_fit_to_fb(image: np.ndarray) -> np.ndarray:
         return image
     return fit_to_framebuffer(image, fb_size)
 
+
 DEFAULT_PNG_PATH = "/tmp/processed_image.png"
 DEFAULT_RGB565_PATH = "/home/pi/output_image.rgb565"
 
@@ -138,9 +139,14 @@ def _offline_placeholder(camera_num: int, ref_shape: tuple[int, int] | None = No
     title_thickness = max(2, int(title_scale * 2))
     (tw, th), _ = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, title_scale, title_thickness)
     cv2.putText(
-        panel, title,
+        panel,
+        title,
         ((w - tw) // 2, h // 2 - 20),
-        cv2.FONT_HERSHEY_SIMPLEX, title_scale, (0, 0, 255), title_thickness, cv2.LINE_AA,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        title_scale,
+        (0, 0, 255),
+        title_thickness,
+        cv2.LINE_AA,
     )
 
     hint = "CHECK CABLE / POWER / IP"
@@ -148,9 +154,14 @@ def _offline_placeholder(camera_num: int, ref_shape: tuple[int, int] | None = No
     hint_thickness = max(1, int(hint_scale * 1.5))
     (hw_, _), _ = cv2.getTextSize(hint, cv2.FONT_HERSHEY_SIMPLEX, hint_scale, hint_thickness)
     cv2.putText(
-        panel, hint,
+        panel,
+        hint,
         ((w - hw_) // 2, h // 2 + th + 30),
-        cv2.FONT_HERSHEY_SIMPLEX, hint_scale, (255, 255, 255), hint_thickness, cv2.LINE_AA,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        hint_scale,
+        (255, 255, 255),
+        hint_thickness,
+        cv2.LINE_AA,
     )
 
     return panel
@@ -286,15 +297,89 @@ def render_height(
     image: np.ndarray,
     png_path: str | Path | None = DEFAULT_PNG_PATH,
     rgb565_path: str | Path | None = DEFAULT_RGB565_PATH,
+    *,
+    left_limit: int = 0,
+    right_limit: int = 0,
+    comparison: int = 0,
+    top_columns: tuple = (),
 ) -> np.ndarray:
-    """Write the raw cam2 frame to display sinks — matches the original height path.
+    """Write cam2 frame to display sinks with optional algorithm overlays.
 
     v0.3.8+: pre-scales to /dev/fb0 dims when available (same fast-path
     optimisation as render_frontback). Pure no-op for tests / dev env.
+
+    v0.3.15+: optional overlays so the operator can see the algorithm's
+    decision-making rather than a raw frame:
+      * Yellow vertical band  — D33/D34 ROI (when both > 0)
+      * Red horizontal line   — D35 height_comparison threshold
+      * Blue short bars       — top-N column max-Y picks (the columns
+                                that contributed to the average)
+
+    All three default off; passing 0/empty keeps the original behaviour
+    (raw frame, byte-identical to the source program's PNG output).
     """
-    image = _maybe_fit_to_fb(image)
-    _write_sinks(image, png_path, rgb565_path)
-    return image
+    annotated = _draw_height_overlays(
+        image,
+        left_limit=left_limit,
+        right_limit=right_limit,
+        comparison=comparison,
+        top_columns=top_columns,
+    )
+    annotated = _maybe_fit_to_fb(annotated)
+    _write_sinks(annotated, png_path, rgb565_path)
+    return annotated
+
+
+# Overlay colours (BGR storage).
+_HEIGHT_ROI_COLOR = (0, 255, 255)  # yellow rectangle for D33/D34 band
+_HEIGHT_THRESHOLD_COLOR = (0, 0, 255)  # red horizontal line for D35
+_HEIGHT_TOP_COLUMN_COLOR = (255, 80, 0)  # blue tick for top-N max-Y picks
+_HEIGHT_TOP_TICK_HALF = 12  # ± px around the marker
+_HEIGHT_ROI_THICK = 4
+_HEIGHT_THRESHOLD_THICK = 2
+_HEIGHT_TOP_TICK_THICK = 2
+
+
+def _draw_height_overlays(
+    image: np.ndarray,
+    *,
+    left_limit: int,
+    right_limit: int,
+    comparison: int,
+    top_columns: tuple,
+) -> np.ndarray:
+    """Stamp the optional overlays. Returns image unchanged when nothing
+    to draw, otherwise a copy with overlays.
+    """
+    has_roi = right_limit > 0 and right_limit > left_limit
+    has_threshold = comparison > 0
+    has_top = bool(top_columns)
+    if not (has_roi or has_threshold or has_top):
+        return image
+
+    out = image.copy()
+    h, w = out.shape[:2]
+
+    if has_roi:
+        x1 = max(0, min(w - 1, int(left_limit)))
+        x2 = max(0, min(w - 1, int(right_limit)))
+        # Vertical band: full image height, just shows the column ROI.
+        cv2.rectangle(out, (x1, 0), (x2, h - 1), _HEIGHT_ROI_COLOR, _HEIGHT_ROI_THICK)
+
+    if has_threshold:
+        y = max(0, min(h - 1, int(comparison)))
+        cv2.line(out, (0, y), (w - 1, y), _HEIGHT_THRESHOLD_COLOR, _HEIGHT_THRESHOLD_THICK)
+
+    for col in top_columns:
+        x = int(getattr(col, "x", -1))
+        my = int(getattr(col, "max_y", -1))
+        if not (0 <= x < w):
+            continue
+        y_top = max(0, my - _HEIGHT_TOP_TICK_HALF)
+        y_bot = min(h - 1, my + _HEIGHT_TOP_TICK_HALF)
+        cv2.line(out, (x, y_top), (x, y_bot), _HEIGHT_TOP_COLUMN_COLOR, _HEIGHT_TOP_TICK_THICK)
+
+    return out
 
 
 def _write_sinks(
