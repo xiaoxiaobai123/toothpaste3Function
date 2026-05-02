@@ -2,7 +2,7 @@
 
 视觉系统通过 Modbus TCP 与 PLC 通讯,**视觉机做客户端**,**PLC 做服务端**(默认端口 502)。所有寄存器都是 16 位保持寄存器(holding register),地址用 `D<n>` 表示,即 Modbus address `<n>` 上的 16-bit 字。
 
-> 英文技术参考见 [`PLC_REGISTERS.md`](PLC_REGISTERS.md)。本手册面向 PLC 工程师,**直接照着写梯形图**就行。
+ 
 
 ---
 
@@ -346,134 +346,92 @@ PLC 侧                              视觉机侧
 >
 > 不写或写 `"v2_unified"` 走前面所有章节的新协议。
 
-## L.0 三模式速查(按 mode 分表)
-
-> 客户工程师做 PLC ladder / HMI 设计时,**先看这一节**——按检测模式分别列出"该写哪里 / 该读哪里"。L.1 是同样信息按 D 地址排序的混合表,适合排查"某个地址是干嘛"。
+## L.0 三模式寄存器速查
 
 ### L.0.0 系统寄存器(三个 mode 共用)
 
-| 地址 | 方向 | 类型 | 名称 | 含义 |
+| 地址 | 方向 | 类型 | 名称 | 值 |
 |:-:|:-:|:-:|:--|:--|
-| **D0** | 视觉→PLC | uint16 | recognition_result | **结果**:1=OK, 2=NG, 3=EMPTY(只 height) |
-| **D1** | PLC→视觉 | uint16 | trigger | **触发**:10=单次 FIRE, 11=进 LOOP, 其他=stop |
-| D1 | 视觉→PLC | uint16 | trigger ack | 0=收到/处理中, 1=完成(LOOP 期间不写) |
-| **D2** | PLC→视觉 | uint16 | mode_selector | **模式**:0=height, 1=frontback, 2=brush_head(v0.3.14+) |
-| D3 | 视觉→PLC | uint16 | cam1_status | 1=在线, 0=离线 |
-| D4 | 视觉→PLC | uint16 | cam2_status | 同上 |
+| `D0` | 视觉→PLC | uint16 | result | 1=OK / 2=NG / 3=EMPTY(只 height)|
+| `D1` | PLC→视觉 | uint16 | trigger | 10=FIRE / 11=LOOP / 其他=stop |
+| `D1` | 视觉→PLC | uint16 | trigger ack | 0=ack / 1=done |
+| `D2` | PLC→视觉 | uint16 | mode | 0=height / 1=frontback / 2=brush_head |
+| `D3` | 视觉→PLC | uint16 | cam1_status | 1=online / 0=offline |
+| `D4` | 视觉→PLC | uint16 | cam2_status | 同上 |
 
-### L.0.1 Mode 1: Frontback (D2=1) — 双相机正反
+---
 
-**PLC 写(配置)**
+### L.0.1 Mode 1: Frontback (D2=1)
 
-| 地址 | 类型 | 名称 | 范围 / 默认 | 单位 |
-|:-:|:-:|:--|:--|:--|
-| `D10` | uint16 | cam1_exposure | 客户填 | μs |
-| `D11` | uint16 | cam2_exposure | 客户填 | μs |
+**PLC 写**
 
-**PLC 读(结果)**
-
-| 地址 | 类型 | 名称 | 含义 |
+| 地址 | 类型 | 名称 | 单位 |
 |:-:|:-:|:--|:--|
-| `D0` | uint16 | result | 1=Front, 2=Back |
-| `D20-D21` | uint32 LE | edge1_count | cam1 边缘像素数(诊断,可不读)|
-| `D22-D23` | uint32 LE | edge2_count | cam2 边缘像素数(诊断,可不读)|
+| `D10` | uint16 | cam1_exposure | μs |
+| `D11` | uint16 | cam2_exposure | μs |
 
-**判定**:`edge1_count > edge2_count` → Front (D0=1),否则 Back (D0=2)
+**PLC 读**
 
-### L.0.2 Mode 0: Height (D2=0) — 单相机高度
+| 地址 | 类型 | 名称 |
+|:-:|:-:|:--|
+| `D0` | uint16 | result(1=Front / 2=Back)|
+| `D20-D21` | uint32 LE | edge1_count |
+| `D22-D23` | uint32 LE | edge2_count |
 
-**PLC 写(配置)**
+---
 
-| 地址 | 类型 | 名称 | 范围 / 默认 | 单位 |
-|:-:|:-:|:--|:--|:--|
-| `D30` | uint16 | cam2_exposure | 客户填 | μs |
-| `D31` | uint16 | brightness_threshold | 0-255 | 亮度 |
-| `D32` | uint16 | min_height | — | 像素 Y |
-| **`D33`** | uint16 | left_limit | 0=不限 | 像素 X(列 ROI 左) |
-| **`D34`** | uint16 | right_limit | 0=不限 | 像素 X(列 ROI 右) |
-| `D35` | uint16 | height_comparison | — | 像素 Y(NG/OK 阈值)|
-| ~~`D36`~~ | uint16 | width_comparison | 读但不用 | — |
+### L.0.2 Mode 0: Height (D2=0)
 
-> v0.3.15+:D33/D34 已生效(算法层 ROI 列范围 + 屏幕黄色矩形带)
+**PLC 写**
 
-**PLC 读(结果)**
-
-| 地址 | 类型 | 名称 | 含义 |
+| 地址 | 类型 | 名称 | 单位 / 默认 |
 |:-:|:-:|:--|:--|
-| `D0` | uint16 | result | 1=OK, 2=NG (overfill), 3=EMPTY(无填充)|
-| `D40` | uint16 | height_result | top-10 列 max_y 平均值 |
-| `D41` | uint16 | width_result | 占位,固定 0 |
+| `D30` | uint16 | cam2_exposure | μs |
+| `D31` | uint16 | brightness_threshold | 0-255 |
+| `D32` | uint16 | min_height | 像素 Y |
+| `D33` | uint16 | left_limit | 像素 X,0=不限 |
+| `D34` | uint16 | right_limit | 像素 X,0=不限 |
+| `D35` | uint16 | height_comparison | 像素 Y |
+| `D36` | uint16 | width_comparison(读但不用)| — |
 
-**判定**:扫 D33-D34 列范围,每列找 brightness > D31 的最深 Y → top-10 取平均 → ≥ D35 NG / < D35 OK / 全部列 < D32 EMPTY
+**PLC 读**
 
-### L.0.3 Mode 2: Brush_head (D2=2,v0.3.16+) — 单相机牙刷头
+| 地址 | 类型 | 名称 |
+|:-:|:-:|:--|
+| `D0` | uint16 | result(1=OK / 2=NG overfill / 3=EMPTY)|
+| `D40` | uint16 | height_result(top-10 max_y 平均)|
+| `D41` | uint16 | width_result(占位,固定 0)|
 
-**PLC 写(配置)— D50-D63 独立段**
+---
 
-| 地址 | 类型 | 名称 | 默认值 | 0 含义 | 编码 |
-|:-:|:-:|:--|:-:|:--|:--|
-| **`D50`** | uint16 | cam1_exposure | 5000 | 用 config | μs |
-| `D51` | uint16 | shrink_pct | 15 | 用 config | % |
-| `D52` | uint16 | adapt_block | 31 | 用 config | 奇数像素 |
-| `D53` | — | reserved | — | — | 预留 adapt_C |
-| `D54` | uint16 | dot_area_min | 20 | 用 config | 像素² |
-| `D55` | uint16 | dot_area_max | 500 | 用 config | 像素² |
-| `D56` | uint16 | roi_area_min ÷100 | 500 | 用 config | 实际 = D56 × 100(默认 50000)|
-| `D57` | uint16 | roi_area_max ÷100 | 5000 | 用 config | 实际 = D57 × 100(默认 500000)|
-| `D58` | uint16 | ratio_min × 10 | 15 | 用 config | 实际 = D58 ÷ 10(默认 1.5)|
-| `D59` | uint16 | ratio_max × 10 | 35 | 用 config | 实际 = D59 ÷ 10(默认 3.5)|
-| **`D60-D63`** | uint16 ×4 | manual_roi (x1,y1,x2,y2) | (0,0,0,0) | (0,0,0,0)=auto-detect | 像素坐标 |
+### L.0.3 Mode 2: Brush_head (D2=2)
 
-> **Dual-track**:任何字段 PLC 写 0 → fallback 到 `config.json:legacy_brush_head_defaults` 的对应字段(再没就 hardcoded 内置值)。客户最少 PLC 改动 = 加一行 `D2=2` 触发即可跑,所有参数都从 config 走默认。
+**PLC 写**(D50-D63 独立段;任意字段 0 = 用 config.json 默认)
 
-**PLC 读(结果)**
+| 地址 | 类型 | 名称 | 默认 | 编码 |
+|:-:|:-:|:--|:-:|:--|
+| `D50` | uint16 | cam1_exposure | 5000 | μs |
+| `D51` | uint16 | shrink_pct | 15 | % |
+| `D52` | uint16 | adapt_block | 31 | 奇数像素 |
+| `D53` | — | reserved | — | — |
+| `D54` | uint16 | dot_area_min | 20 | 像素² |
+| `D55` | uint16 | dot_area_max | 500 | 像素² |
+| `D56` | uint16 | roi_area_min ÷100 | 500 | × 100 = 像素² |
+| `D57` | uint16 | roi_area_max ÷100 | 5000 | × 100 = 像素² |
+| `D58` | uint16 | ratio_min × 10 | 15 | ÷ 10 = ratio |
+| `D59` | uint16 | ratio_max × 10 | 35 | ÷ 10 = ratio |
+| `D60` | uint16 | manual_roi.x1 | 0 | 像素 |
+| `D61` | uint16 | manual_roi.y1 | 0 | 像素 |
+| `D62` | uint16 | manual_roi.x2 | 0 | 像素 |
+| `D63` | uint16 | manual_roi.y2 | 0 | 像素;(0,0,0,0)=auto |
 
-| 地址 | 类型 | 名称 | 含义 |
-|:-:|:-:|:--|:--|
-| `D0` | uint16 | result | 1=OK(含 Front/Back),2=NG |
-| `D42` | uint16 | brush_dot_count | dot 数(诊断,目前固定 0,reserved)|
-| `D43` | uint16 | brush_area_x100 | ROI 面积 ÷ 100(诊断,目前固定 0)|
+**PLC 读**
 
-**判定**:adaptive threshold → 找 dot 凸包 → minAreaRect → 验证 area + ratio → ROI 旋转水平 + shrink → 上下半暗像素密度比较 → upper > lower=Front (OK) / upper < lower=Back (OK) / 相等=NG
-
-### L.0.4 物理隔离区域全图
-
-```
-D0   ─── 系统结果(共用)
-D1   ─── 系统触发(共用)
-D2   ─── 模式选择(共用)0/1/2
-D3-4 ─── 相机状态(共用)
-D5-9 ─── reserved
-D10-11   FRONTBACK 段(cam exposures)
-D12-15   reserved(v0.3.14/15 曾用 brush_head;v0.3.16 移到 D50-D63 完全独立)
-D16-19   reserved
-D20-23   FRONTBACK 输出(edge counts uint32 ×2)
-D24-29   reserved
-D30-36   HEIGHT 段(cam2 exp + 算法参数)
-D37-39   reserved
-D40-41   HEIGHT 输出
-D42-43   BRUSH_HEAD 输出(诊断)
-D44-49   reserved
-D50-63   BRUSH_HEAD 段(完整 14-word 独立配置)
-```
-
-**FRONTBACK / HEIGHT / BRUSH_HEAD 三个段物理零重叠**(除系统级 D0-D4 + D2 mode 选择器),客户 PLC ladder 三个模式互不干扰。
-
-### L.0.5 触发时序(三个模式都一样)
-
-```
-                单次 FIRE                       LOOP
-  PLC 写 D2=mode + D1=10                PLC 写 D2=mode + D1=11
-                ↓                                  ↓
-  视觉读 D2 + D1 → 看到 10              视觉读 D1 → 11 → 进 LOOP
-  视觉写 D1=0 (ack)                     视觉不动 D1
-  视觉跑算法                            视觉持续读 D1+D2:
-  视觉写 D0/D3/D4/...(模式相关)            如果 D1 还是 11 → 继续抓
-  视觉写 D1=1 (done)                       如果 D1 ≠ 11 → 退出 LOOP
-                ↓                       跑算法 → 写 D0 等(每 cycle)
-  PLC 监 D1==1 → 读 D0 等
-                                        操作员 PLC 写 D1=0 停 LOOP
-```
+| 地址 | 类型 | 名称 |
+|:-:|:-:|:--|
+| `D0` | uint16 | result(1=OK / 2=NG)|
+| `D42` | uint16 | brush_dot_count(诊断,目前固定 0)|
+| `D43` | uint16 | brush_area ÷100(诊断,目前固定 0)|
 
 ---
 
@@ -522,151 +480,4 @@ D50-63   BRUSH_HEAD 段(完整 14-word 独立配置)
 | `D42` | uint16 | brush_dot_count | **牙刷头模式**检测到的斑点数(诊断用,可不读)|
 | `D43` | uint16 | brush_area_x100 | 牙刷头检测 ROI 面积 ÷ 100(诊断用) |
 
-## L.2 标准操作时序
-
-### 双相机正反 (D2=1)
-
-```
-PLC                                   视觉机
- │                                      │
- │ ① 配 D10/D11 曝光                    │
- │ ② D2 = 1 (正反模式)                   │
- │ ③ D1 = 10 (触发)                      │
- │ ───────────────────────────────►    │
- │                                      │ 块读 D1+D2 → 看到触发
- │                                      │ 写 D1 = 0 (确认收到)
- │ ◄───────────────────────────────    │
- │                                      │ 块读 D10+D11 → 设两相机曝光
- │                                      │ 并行采图 cam1+cam2
- │                                      │ 算 Sobel 边缘数
- │                                      │ result = (e1 > e2) ? 1 : 2
- │                                      │ 并行写 D0, D3, D4, D20-23
- │                                      │ 写 D1 = 1 (完成)
- │ ◄───────────────────────────────    │
- │                                      │
- │ ④ 监 D1 == 1 → 读 D0 取结果            │
- │   读 D20-23 取边缘数(可选,调阈值用)  │
-```
-
-### 单相机高度 (D2=0)
-
-```
-PLC                                   视觉机
- │                                      │
- │ ① 配 D30 曝光,D31 亮度阈值,           │
- │   D32 最低有效Y, D35 判定阈值          │
- │ ② D2 = 0 (高度模式)                   │
- │ ③ D1 = 10 (触发)                      │
- │ ───────────────────────────────►    │
- │                                      │ 块读 D1+D2
- │                                      │ 写 D1 = 0
- │ ◄───────────────────────────────    │
- │                                      │ 块读 D30..D36 (一次 7 寄存器)
- │                                      │ 设 cam2 曝光,采 cam2
- │                                      │ R 通道阈值化,列最大Y top10 平均
- │                                      │ result = 1/2/3 (OK/NG/空)
- │                                      │ 并行写 D0, D4, D40
- │                                      │ 写 D1 = 1
- │ ◄───────────────────────────────    │
- │                                      │
- │ ④ 监 D1 == 1 → 读 D0 + D40             │
-```
-
-**屏幕显示叠加(v0.3.15+)**:操作员屏上的 cam2 帧会叠加三种 overlay,所有 overlay 在对应 PLC 字段为 0 时不绘制(byte-compat 默认):
-- **黄色矩形竖带**:D33 ~ D34 之间 = 列检测 ROI(让操作员看到算法在哪里测高度)
-- **红色水平线**:y = D35 = 判定阈值(高于线 → NG;低于 → OK)
-- **蓝色短竖线**:top-10 列的 max_y 位置(算法实际取了哪些列做平均)
-
-### 单相机牙刷头 (D2=2,v0.3.16+)
-
-> **完全独立段**:v0.3.16 把所有牙刷头参数集中在 D50-D63,跟 frontback (D10/D11) 和 height (D30-D36) 物理零重叠 —— 客户 PLC ladder 三种模式互不干扰。复用 v2 的 BrushHeadProcessor 算法,客户 PLC 必须显式 dispatch D2=2。**算法参数全部可选**:D50-D59 + D60-D63 任何字段写 0 时使用 `config.json:legacy_brush_head_defaults` 段的默认值。
-
-```
-PLC                                   视觉机
- │                                      │
- │ ① 配 D50 brush cam1 曝光(可选,默认 5000)│
- │   D51-D59 算法参数(可选;每个 0=默认)│
- │   D60-D63 manual ROI(可选;(0,0,0,0)=auto)│
- │ ② D2 = 2 (牙刷头模式)                 │
- │ ③ D1 = 10 (触发) 或 D1=11 (进 LOOP)    │
- │ ───────────────────────────────►    │
- │                                      │ 块读 D1-D11 (trigger+frontback exposure)
- │                                      │ 看到 D2=2 → 块读 D50-D63 (14 words)
- │                                      │ 写 D1 = 0
- │ ◄───────────────────────────────    │
- │                                      │ 设 cam1 曝光,采 cam1
- │                                      │ (manual_roi 非零时先裁剪)
- │                                      │ 自动检测 dot 凸包 + 长短边比验证
- │                                      │ result = 1 (OK 含 Front/Back) / 2 (NG)
- │                                      │ 并行写 D0, D3, D42, D43
- │                                      │ 写 D1 = 1 (FIRE 模式) / 不写 D1 (LOOP)
- │ ◄───────────────────────────────    │
- │                                      │
- │ ④ 监 D1 == 1 → 读 D0                  │
- │   读 D42/D43 取诊断信息(可选)        │
-```
-
-**双轨参数策略**(让客户分阶段迁移调参从 config.json 到 PLC HMI):
-- 客户 PLC 完全不写 D50-D63 → 全部走 `config.json` 默认值。**最小 PLC 改动 = 加一行 D2=2 dispatch**。
-- 客户 PLC 写非 0 到某个 D50-D59 → 该字段走 PLC,其他仍走默认值。**渐进式精细控制**。
-- 客户 PLC 写齐 D50-D63 → 完全 PLC 控制,操作员从 HMI 实时调参,不需要 SSH 改 config。
-
-**adapt_C 不通过 PLC 暴露**(D53 reserved):它是底层算法 hyperparameter,操作员不该实时动。如果生产线灯光大变需要调,改 `config.json:legacy_brush_head_defaults.adapt_C` 然后重启服务即可。
-
-## L.3 与原 fronback 程序的差异(全部不影响 PLC 行为)
-
-| 项 | 原 fronback | 新 legacy adapter | 客户感知 |
-|:--|:-:|:-:|:--|
-| 双相机采图 | 串行(先 cam1 再 cam2) | 并行(asyncio.gather) | **采图节拍快 ~50ms,结果一致** |
-| 双 PLC 写(D3+D4 / D20+D40) | 串行 | 并行 | 写完早 ~10ms |
-| D12/D13 unrecognized_threshold | 每 50ms 读两次,**结果丢弃** | **不读** | 每秒少 40 次 Modbus 读,客户无感 |
-| 块读 D30..D36 | 7 次单字读 | 1 次 7 字块读 | 高度模式快 ~20ms |
-| 块写 D20..D23 | 4 次单字写 | 1 次 4 字块写 | 边缘数下发快 ~5ms |
-| 边缘判定逻辑 | `e1 > e2` ? 1 : 2 | **完全一致** | 同一张图,**结果字节级相同** |
-| 高度判定逻辑 | R 通道,top10 平均 | **完全一致** | 同上 |
-
-## L.4 关于 `D12/D13 unrecognized_threshold`
-
-通过对原 `toothpastefronback` 仓库的全文检索:
-
-```
-$ grep -rn unrecognized fronback/ --include="*.py"
-plc_manager.py:19:  unrecognized_threshold = 0           # 全局变量声明
-plc_manager.py:20:  unrecognized_threshold_low = 0
-plc_manager.py:21:  unrecognized_threshold_high = 0
-plc_manager.py:281: ADDRESS_THRESHOLD_UNRECOGNIZED_LOW = 12
-plc_manager.py:282: ADDRESS_THRESHOLD_UNRECOGNIZED_HIGH = 13
-plc_manager.py:328: # Reading the unrecognized thresholds
-plc_manager.py:329: global unrecognized_threshold,unrecognized_threshold_low, unrecognized_threshold_high
-plc_manager.py:330: unrecognized_threshold_low = plc_communicator.read_data(...)[0]
-plc_manager.py:331: unrecognized_threshold_high = plc_communicator.read_data(...)[0]
-plc_manager.py:332: unrecognized_threshold = (unrecognized_threshold_high << 32) | low
-```
-
-**所有 8 处出现都在 `plc_manager.py`,且没有任何地方读取或使用这两个变量的值**(算法、判定、写回都不涉及它们)。原代码读了 D12/D13 后赋给全局变量然后再没用过。
-
-新版 legacy adapter 直接**不读 D12/D13**,每次循环少两次 Modbus 来回。如果客户那边发现哪个 ladder 真的需要"视觉机定期访问 D12/D13"(理论上不可能),改回去也是一行代码的事。
-
-## L.5 ROI 配置文件
-
-每台相机一份 JSON,跟原版一样:
-
-```
-roi_coordinates_192_168_2_10.json     # cam1 (IP 中的点用下划线代替)
-roi_coordinates_192_168_3_10.json     # cam2
-```
-
-文件内容:
-```json
-{"x1": 300, "y1": 100, "x2": 950, "y2": 850}
-```
-
-**部署时直接把现场用的两份文件 scp 到二进制同一目录**——格式和原 fronback 完全一致,不用动。
-
-模板见仓库 [`legacy/sample_roi/roi_coordinates_template.json`](../legacy/sample_roi/roi_coordinates_template.json)。
-
----
-
-> 文档版本:v0.2.0 配套(legacy 协议适配层引入)
-> 对应代码 commit:见 [`README.md`](../README.md)
-> 有疑问请到仓库提 issue
+ 
