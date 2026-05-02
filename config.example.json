@@ -26,11 +26,16 @@
         "ip": "192.168.1.10"
     },
 
-    "_comment_legacy_brush_head": "Defaults for legacy_fronback D2=2 (BRUSH_HEAD) mode. PLC writing 0 to D12-D15 means 'use these values'. Non-zero PLC writes override per cycle. Only relevant when plc_protocol == 'legacy_fronback' AND the customer's PLC ladder dispatches D2=2.",
+    "_comment_legacy_brush_head": "Defaults for legacy_fronback D2=2 (BRUSH_HEAD) mode. The PLC parameter block lives at D50-D63 — writing 0 to any slot means 'use these values'. Non-zero PLC writes override per cycle. adapt_C is not exposed via PLC (operator shouldn't tune the adaptive-threshold offset live); change it here if the algorithm starts misclassifying after a lighting change.",
     "legacy_brush_head_defaults": {
         "exposure": 5000,
+        "shrink_pct": 15,
+        "adapt_block": 31,
+        "adapt_C": 8,
         "dot_area_min": 20,
         "dot_area_max": 500,
+        "roi_area_min": 50000,
+        "roi_area_max": 500000,
         "ratio_min": 1.5,
         "ratio_max": 3.5
     }

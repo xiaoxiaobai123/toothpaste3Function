@@ -1,16 +1,25 @@
 """Legacy-protocol adapter for the v2 BrushHeadProcessor.
 
-Handles the D2=2 dispatch path: takes BrushHeadSettings (raw PLC words,
-0 means "use config default") + the operator's config.json defaults,
-shapes them into the 18-word raw_config dict that BrushHeadProcessor
-consumes, runs the same algorithm v2 uses for ProductType.BRUSH_HEAD,
-and maps the Outcome back to legacy's D0/D42/D43 register layout.
+Handles the D2=2 dispatch path: takes the 14-word BrushHeadSettings
+block (D50-D63 — physically separated from frontback / height registers
+per customer spec) + the operator's config.json defaults, shapes them
+into the 18-word raw_config dict that BrushHeadProcessor consumes, runs
+the same algorithm v2 uses for ProductType.BRUSH_HEAD, and maps the
+Outcome back to legacy's D0/D42/D43 register layout.
 
 We deliberately reuse the v2 BrushHeadProcessor verbatim — no
-algorithm divergence between v2 brush_head and legacy brush_head —
-so a future port of customers from legacy → v2 produces identical
+algorithm divergence between v2 brush_head and legacy brush_head — so
+a future port of customers from legacy → v2 produces identical
 detection behaviour. The adapter is purely a parameter+result shape
 translation.
+
+Per-slot fallback: each PLC field at 0 means "use the config.json
+default for this parameter", so the customer can ship a minimal PLC
+ladder (just D2=2 dispatch + a few fields they care about) and tune the
+rest from config. Field-by-field: writing 0 to a slot the customer
+*does* want at the literal value 0 is impossible — that's an inherent
+limitation of the sentinel scheme. None of the brush_head parameters
+have 0 as a meaningful operating value, so this is fine in practice.
 """
 
 from __future__ import annotations
@@ -25,6 +34,7 @@ from legacy.fronback_protocol import (
     RESULT_FRONT_OR_OK,
     BrushHeadSettings,
 )
+from plc.codec import uint32_to_words
 from processing.brush_head import BrushHeadProcessor
 from processing.result import ProcessResult
 
@@ -47,21 +57,46 @@ _PROCESSOR = BrushHeadProcessor()
 
 
 def _merge_with_defaults(legacy: BrushHeadSettings, defaults: dict[str, Any]) -> dict[str, Any]:
-    """Build the v2-shaped raw_config dict, swapping in defaults for any
-    legacy slot the PLC left at 0.
+    """Build the v2-shaped settings dict from PLC values + config defaults.
 
-    raw_config is an 18-word array; BrushHeadProcessor reads indices 5-15.
-    We only populate the four slots legacy exposes (8/9/14/15); the rest
-    stay 0 so BrushHeadProcessor's own per-field "0 → DEFAULTS[...]"
-    fallback fills them in.
+    Builds an 18-word raw_config array (BrushHeadProcessor reads indices
+    5-15) where each populated slot is either the PLC value (when
+    non-zero) or the config default. Slot layout:
 
-    Ratios are stored × 10 in PLC for uint16 fit (15 = 1.5). Defaults are
-    stored as floats in config.json — convert before mixing.
+        raw[5]      shrink_pct          (D51 / defaults["shrink_pct"])
+        raw[6]      adapt_block         (D52 / defaults["adapt_block"])
+        raw[7]      adapt_C             (NOT exposed via PLC; defaults only)
+        raw[8]      dot_area_min        (D54 / defaults["dot_area_min"])
+        raw[9]      dot_area_max        (D55 / defaults["dot_area_max"])
+        raw[10..11] roi_area_min uint32 (D56 × 100 / defaults["roi_area_min"])
+        raw[12..13] roi_area_max uint32 (D57 × 100 / defaults["roi_area_max"])
+        raw[14]     ratio_min × 10      (D58 / defaults["ratio_min"] × 10)
+        raw[15]     ratio_max × 10      (D59 / defaults["ratio_max"] × 10)
+
+    `manual_roi` is the D60-D63 4-tuple; (0,0,0,0) means "auto-detect on
+    full frame", same as the v2 default.
     """
     raw = [0] * 18
 
+    raw[5] = legacy.shrink_pct if legacy.shrink_pct != 0 else int(defaults["shrink_pct"])
+    raw[6] = legacy.adapt_block if legacy.adapt_block != 0 else int(defaults["adapt_block"])
+    raw[7] = int(defaults["adapt_C"])  # never PLC-overridable in this protocol layer
     raw[8] = legacy.dot_area_min if legacy.dot_area_min != 0 else int(defaults["dot_area_min"])
     raw[9] = legacy.dot_area_max if legacy.dot_area_max != 0 else int(defaults["dot_area_max"])
+
+    roi_area_min = (
+        legacy.roi_area_min_x100 * 100 if legacy.roi_area_min_x100 != 0 else int(defaults["roi_area_min"])
+    )
+    roi_area_max = (
+        legacy.roi_area_max_x100 * 100 if legacy.roi_area_max_x100 != 0 else int(defaults["roi_area_max"])
+    )
+    # uint32 → 2-word little-endian split (raw[10]=low, raw[11]=high) — matches
+    # what BrushHeadProcessor reconstructs via words_to_uint32(raw[10], raw[11]).
+    lo, hi = uint32_to_words(roi_area_min)
+    raw[10], raw[11] = lo, hi
+    lo, hi = uint32_to_words(roi_area_max)
+    raw[12], raw[13] = lo, hi
+
     raw[14] = (
         legacy.ratio_min_x10 if legacy.ratio_min_x10 != 0 else int(round(float(defaults["ratio_min"]) * 10))
     )
@@ -71,10 +106,9 @@ def _merge_with_defaults(legacy: BrushHeadSettings, defaults: dict[str, Any]) ->
 
     return {
         "raw_config": raw,
-        # Legacy brush_head doesn't expose manual pre-crop ROI to PLC
-        # — the PLC parameter budget is tight. (0,0,0,0) means
-        # "auto-detect on full frame" inside BrushHeadProcessor.
-        "manual_roi": (0, 0, 0, 0),
+        # manual_roi falls through unchanged. (0,0,0,0) = auto-detect inside
+        # BrushHeadProcessor; non-zero rectangle pre-crops the image.
+        "manual_roi": legacy.manual_roi,
     }
 
 

@@ -354,12 +354,9 @@ PLC 侧                              视觉机侧
 |:-:|:-:|:--|:--|
 | `D1` | uint16 | capture_trigger | 写 10 触发拍照,视觉处理完写回 0/1 |
 | `D2` | uint16 | workcamera_count | **模式开关**:1=双相机正反, 0=单相机高度, 2=单相机牙刷头(v0.3.14+) |
-| `D10` | uint16 | cam1_exposure | 正反模式 cam1 曝光(微秒);牙刷头模式同样用此寄存器 |
+| `D10` | uint16 | cam1_exposure | **正反模式**专用 cam1 曝光(微秒);牙刷头模式不读此寄存器 |
 | `D11` | uint16 | cam2_exposure | 正反模式下 cam2 曝光(微秒) |
-| `D12` | uint16 | brush_dot_area_min | **牙刷头模式**最小斑点面积;0 = 用 config.json 默认 |
-| `D13` | uint16 | brush_dot_area_max | 牙刷头模式最大斑点面积;0 = 默认 |
-| `D14` | uint16 | brush_ratio_min × 10 | 牙刷头 ROI 长短边比下限 ×10(15 = 1.5);0 = 默认 |
-| `D15` | uint16 | brush_ratio_max × 10 | 牙刷头 ROI 长短边比上限 ×10;0 = 默认 |
+| ~~`D12-D15`~~ | — | reserved | v0.3.14/15 曾作为牙刷头参数,v0.3.16 起移到 D50-D63 完全独立段 |
 | `D30` | uint16 | height_cam2_exposure | 高度模式下 cam2 曝光 |
 | `D31` | uint16 | brightness_threshold | 高度模式亮度阈值(0-255) |
 | `D32` | uint16 | min_height | 高度模式最低有效 Y |
@@ -367,6 +364,17 @@ PLC 侧                              视觉机侧
 | `D34` | uint16 | right_limit | 高度模式列检测 ROI 右边界(0=不限);v0.3.15+ 已生效 |
 | `D35` | uint16 | height_comparison | 高度模式判定阈值 |
 | `D36` | uint16 | width_comparison | 读但不用(协议保持) |
+| **`D50`** | uint16 | brush_cam1_exposure | **牙刷头模式**专用 cam1 曝光(独立于 D10);0=用 config 默认 |
+| **`D51`** | uint16 | brush_shrink_pct | ROI 收缩百分比;0=默认 15 |
+| **`D52`** | uint16 | brush_adapt_block | 自适应阈值窗口大小(自动调整为奇数 ≥3);0=默认 31 |
+| `D53` | — | reserved | 预留(adapt_C,目前不暴露)|
+| **`D54`** | uint16 | brush_dot_area_min | 最小斑点面积;0=默认 20 |
+| **`D55`** | uint16 | brush_dot_area_max | 最大斑点面积;0=默认 500 |
+| **`D56`** | uint16 | brush_roi_area_min ÷100 | ROI 总面积下限 ÷ 100(500=50000 像素);0=默认 |
+| **`D57`** | uint16 | brush_roi_area_max ÷100 | ROI 总面积上限 ÷ 100(5000=500000 像素);0=默认 |
+| **`D58`** | uint16 | brush_ratio_min × 10 | ROI 长短边比下限 × 10(15=1.5);0=默认 |
+| **`D59`** | uint16 | brush_ratio_max × 10 | ROI 长短边比上限 × 10(35=3.5);0=默认 |
+| **`D60-D63`** | uint16 ×4 | brush_manual_roi (x1,y1,x2,y2)| 手动 ROI 矩形(像素坐标);(0,0,0,0)=自动检测整帧 |
 
 ### 结果(视觉写,PLC 读)
 
@@ -438,22 +446,25 @@ PLC                                   视觉机
 - **红色水平线**:y = D35 = 判定阈值(高于线 → NG;低于 → OK)
 - **蓝色短竖线**:top-10 列的 max_y 位置(算法实际取了哪些列做平均)
 
-### 单相机牙刷头 (D2=2,v0.3.14+)
+### 单相机牙刷头 (D2=2,v0.3.16+)
 
-> **可选 mode**:复用 v2 的 BrushHeadProcessor 算法。客户 PLC ladder 必须显式 dispatch D2=2,但**算法参数全部可选**——D12-D15 写 0 时使用 `config.json:legacy_brush_head_defaults` 段的值。
+> **完全独立段**:v0.3.16 把所有牙刷头参数集中在 D50-D63,跟 frontback (D10/D11) 和 height (D30-D36) 物理零重叠 —— 客户 PLC ladder 三种模式互不干扰。复用 v2 的 BrushHeadProcessor 算法,客户 PLC 必须显式 dispatch D2=2。**算法参数全部可选**:D50-D59 + D60-D63 任何字段写 0 时使用 `config.json:legacy_brush_head_defaults` 段的默认值。
 
 ```
 PLC                                   视觉机
  │                                      │
- │ ① 配 D10 cam1 曝光(必)               │
- │   D12-D15 算法参数(可选;0=默认)     │
+ │ ① 配 D50 brush cam1 曝光(可选,默认 5000)│
+ │   D51-D59 算法参数(可选;每个 0=默认)│
+ │   D60-D63 manual ROI(可选;(0,0,0,0)=auto)│
  │ ② D2 = 2 (牙刷头模式)                 │
- │ ③ D1 = 10 (触发,或 D1=11 进 LOOP)     │
+ │ ③ D1 = 10 (触发) 或 D1=11 (进 LOOP)    │
  │ ───────────────────────────────►    │
- │                                      │ 块读 D1-D15 (LOOP 一次)
+ │                                      │ 块读 D1-D11 (trigger+frontback exposure)
+ │                                      │ 看到 D2=2 → 块读 D50-D63 (14 words)
  │                                      │ 写 D1 = 0
  │ ◄───────────────────────────────    │
  │                                      │ 设 cam1 曝光,采 cam1
+ │                                      │ (manual_roi 非零时先裁剪)
  │                                      │ 自动检测 dot 凸包 + 长短边比验证
  │                                      │ result = 1 (OK 含 Front/Back) / 2 (NG)
  │                                      │ 并行写 D0, D3, D42, D43
@@ -464,10 +475,12 @@ PLC                                   视觉机
  │   读 D42/D43 取诊断信息(可选)        │
 ```
 
-**双轨参数策略**:
-- 客户 PLC 完全不改 D12-D15 → 全部走 `config.json` 默认值。**最小 PLC 改动 = 加一行 D2=2 dispatch**。
-- 客户 PLC 写非 0 到某个 D12-D15 → 该参数走 PLC,其他仍走默认值。**渐进式精细控制**。
-- 全部 D12-D15 写非 0 → 完全 PLC 控制,跟 frontback / height 一致。
+**双轨参数策略**(让客户分阶段迁移调参从 config.json 到 PLC HMI):
+- 客户 PLC 完全不写 D50-D63 → 全部走 `config.json` 默认值。**最小 PLC 改动 = 加一行 D2=2 dispatch**。
+- 客户 PLC 写非 0 到某个 D50-D59 → 该字段走 PLC,其他仍走默认值。**渐进式精细控制**。
+- 客户 PLC 写齐 D50-D63 → 完全 PLC 控制,操作员从 HMI 实时调参,不需要 SSH 改 config。
+
+**adapt_C 不通过 PLC 暴露**(D53 reserved):它是底层算法 hyperparameter,操作员不该实时动。如果生产线灯光大变需要调,改 `config.json:legacy_brush_head_defaults.adapt_C` 然后重启服务即可。
 
 ## L.3 与原 fronback 程序的差异(全部不影响 PLC 行为)
 

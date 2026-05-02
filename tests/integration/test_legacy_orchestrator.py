@@ -513,8 +513,8 @@ async def test_brush_head_d2_2_dispatches_brushhead_processor(
     plc = ScriptedPLC()
     plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_FIRE
     plc.regs[2] = 2  # MODE_BRUSH_HEAD
-    plc.regs[10] = 5000  # cam1 exposure (D10)
-    # D12-D15 left at 0 → use defaults via brush_head adapter
+    plc.regs[50] = 5000  # cam1 exposure (D50, brush-head independent)
+    # D51-D63 left at 0 → use defaults via brush_head adapter
 
     # Stub the orchestrator's defaults provider so the test doesn't need a
     # real config.json on disk.
@@ -525,8 +525,13 @@ async def test_brush_head_d2_2_dispatches_brushhead_processor(
         "_brush_head_defaults",
         lambda self: {
             "exposure": 5000,
+            "shrink_pct": 15,
+            "adapt_block": 31,
+            "adapt_C": 8,
             "dot_area_min": 20,
             "dot_area_max": 500,
+            "roi_area_min": 50000,
+            "roi_area_max": 500000,
             "ratio_min": 1.5,
             "ratio_max": 3.5,
         },

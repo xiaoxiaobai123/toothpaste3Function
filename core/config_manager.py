@@ -129,12 +129,18 @@ class ConfigManager:
     def get_legacy_brush_head_defaults(self) -> dict[str, Any]:
         """Defaults applied when PLC writes 0 to a brush-head parameter.
 
-        Lets `legacy_fronback` brush_head mode work without the customer
-        adding brush params to their PLC ladder right away — they just
-        write D2=2 to trigger and we use config.json (or hardcoded
-        sensible values) for everything else. Each non-zero PLC word
-        overrides the matching default per cycle (see
+        Lets `legacy_fronback` brush_head mode (D2=2) work without the
+        customer adding every parameter to their PLC ladder right away
+        — they just write D2=2 to trigger and we fill in any 0-valued
+        slot from config.json (or hardcoded sensible values from
+        BrushHeadProcessor.DEFAULTS). Each non-zero PLC word overrides
+        the matching default per cycle (see
         `legacy/fronback_brush_head._merge_with_defaults`).
+
+        Field set mirrors BrushHeadProcessor.DEFAULTS plus an `exposure`
+        entry for the camera. `adapt_C` is included even though no PLC
+        register exposes it — the customer can still tune it via this
+        config when the auto-detected adaptive threshold drifts.
 
         Numeric coercion is forgiving so a stray string like "1.5" in
         the config file still works.
@@ -142,8 +148,13 @@ class ConfigManager:
         cfg = self.config.get("legacy_brush_head_defaults", {})
         return {
             "exposure": int(cfg.get("exposure", 5000)),
+            "shrink_pct": int(cfg.get("shrink_pct", 15)),
+            "adapt_block": int(cfg.get("adapt_block", 31)),
+            "adapt_C": int(cfg.get("adapt_C", 8)),
             "dot_area_min": int(cfg.get("dot_area_min", 20)),
             "dot_area_max": int(cfg.get("dot_area_max", 500)),
+            "roi_area_min": int(cfg.get("roi_area_min", 50000)),
+            "roi_area_max": int(cfg.get("roi_area_max", 500000)),
             "ratio_min": float(cfg.get("ratio_min", 1.5)),
             "ratio_max": float(cfg.get("ratio_max", 3.5)),
         }

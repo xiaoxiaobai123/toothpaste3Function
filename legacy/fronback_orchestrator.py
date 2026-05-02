@@ -231,15 +231,11 @@ class LegacyFronbackOrchestrator:
                 elif block.mode == MODE_HEIGHT:
                     await self._do_height()
                 elif block.mode == MODE_BRUSH_HEAD:
-                    # Reuse D10 + D12-D15 already in the loop block.
-                    preread_brush = BrushHeadSettings(
-                        cam1_exposure=block.cam1_exposure,
-                        dot_area_min=block.brush_dot_area_min,
-                        dot_area_max=block.brush_dot_area_max,
-                        ratio_min_x10=block.brush_ratio_min_x10,
-                        ratio_max_x10=block.brush_ratio_max_x10,
-                    )
-                    await self._do_brush_head(preread_settings=preread_brush)
+                    # Brush params live in D50-D63, far from the loop block;
+                    # _do_brush_head reads them itself. Adds ~1 round-trip
+                    # per brush_head cycle but keeps the loop block tight
+                    # for frontback/height (the common cases).
+                    await self._do_brush_head()
                 else:
                     self.logger.warning(f"[Legacy] LOOP: unknown mode D2={block.mode}, skipping cycle")
             except asyncio.CancelledError:
