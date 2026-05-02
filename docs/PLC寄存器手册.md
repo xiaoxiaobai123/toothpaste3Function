@@ -346,6 +346,137 @@ PLC 侧                              视觉机侧
 >
 > 不写或写 `"v2_unified"` 走前面所有章节的新协议。
 
+## L.0 三模式速查(按 mode 分表)
+
+> 客户工程师做 PLC ladder / HMI 设计时,**先看这一节**——按检测模式分别列出"该写哪里 / 该读哪里"。L.1 是同样信息按 D 地址排序的混合表,适合排查"某个地址是干嘛"。
+
+### L.0.0 系统寄存器(三个 mode 共用)
+
+| 地址 | 方向 | 类型 | 名称 | 含义 |
+|:-:|:-:|:-:|:--|:--|
+| **D0** | 视觉→PLC | uint16 | recognition_result | **结果**:1=OK, 2=NG, 3=EMPTY(只 height) |
+| **D1** | PLC→视觉 | uint16 | trigger | **触发**:10=单次 FIRE, 11=进 LOOP, 其他=stop |
+| D1 | 视觉→PLC | uint16 | trigger ack | 0=收到/处理中, 1=完成(LOOP 期间不写) |
+| **D2** | PLC→视觉 | uint16 | mode_selector | **模式**:0=height, 1=frontback, 2=brush_head(v0.3.14+) |
+| D3 | 视觉→PLC | uint16 | cam1_status | 1=在线, 0=离线 |
+| D4 | 视觉→PLC | uint16 | cam2_status | 同上 |
+
+### L.0.1 Mode 1: Frontback (D2=1) — 双相机正反
+
+**PLC 写(配置)**
+
+| 地址 | 类型 | 名称 | 范围 / 默认 | 单位 |
+|:-:|:-:|:--|:--|:--|
+| `D10` | uint16 | cam1_exposure | 客户填 | μs |
+| `D11` | uint16 | cam2_exposure | 客户填 | μs |
+
+**PLC 读(结果)**
+
+| 地址 | 类型 | 名称 | 含义 |
+|:-:|:-:|:--|:--|
+| `D0` | uint16 | result | 1=Front, 2=Back |
+| `D20-D21` | uint32 LE | edge1_count | cam1 边缘像素数(诊断,可不读)|
+| `D22-D23` | uint32 LE | edge2_count | cam2 边缘像素数(诊断,可不读)|
+
+**判定**:`edge1_count > edge2_count` → Front (D0=1),否则 Back (D0=2)
+
+### L.0.2 Mode 0: Height (D2=0) — 单相机高度
+
+**PLC 写(配置)**
+
+| 地址 | 类型 | 名称 | 范围 / 默认 | 单位 |
+|:-:|:-:|:--|:--|:--|
+| `D30` | uint16 | cam2_exposure | 客户填 | μs |
+| `D31` | uint16 | brightness_threshold | 0-255 | 亮度 |
+| `D32` | uint16 | min_height | — | 像素 Y |
+| **`D33`** | uint16 | left_limit | 0=不限 | 像素 X(列 ROI 左) |
+| **`D34`** | uint16 | right_limit | 0=不限 | 像素 X(列 ROI 右) |
+| `D35` | uint16 | height_comparison | — | 像素 Y(NG/OK 阈值)|
+| ~~`D36`~~ | uint16 | width_comparison | 读但不用 | — |
+
+> v0.3.15+:D33/D34 已生效(算法层 ROI 列范围 + 屏幕黄色矩形带)
+
+**PLC 读(结果)**
+
+| 地址 | 类型 | 名称 | 含义 |
+|:-:|:-:|:--|:--|
+| `D0` | uint16 | result | 1=OK, 2=NG (overfill), 3=EMPTY(无填充)|
+| `D40` | uint16 | height_result | top-10 列 max_y 平均值 |
+| `D41` | uint16 | width_result | 占位,固定 0 |
+
+**判定**:扫 D33-D34 列范围,每列找 brightness > D31 的最深 Y → top-10 取平均 → ≥ D35 NG / < D35 OK / 全部列 < D32 EMPTY
+
+### L.0.3 Mode 2: Brush_head (D2=2,v0.3.16+) — 单相机牙刷头
+
+**PLC 写(配置)— D50-D63 独立段**
+
+| 地址 | 类型 | 名称 | 默认值 | 0 含义 | 编码 |
+|:-:|:-:|:--|:-:|:--|:--|
+| **`D50`** | uint16 | cam1_exposure | 5000 | 用 config | μs |
+| `D51` | uint16 | shrink_pct | 15 | 用 config | % |
+| `D52` | uint16 | adapt_block | 31 | 用 config | 奇数像素 |
+| `D53` | — | reserved | — | — | 预留 adapt_C |
+| `D54` | uint16 | dot_area_min | 20 | 用 config | 像素² |
+| `D55` | uint16 | dot_area_max | 500 | 用 config | 像素² |
+| `D56` | uint16 | roi_area_min ÷100 | 500 | 用 config | 实际 = D56 × 100(默认 50000)|
+| `D57` | uint16 | roi_area_max ÷100 | 5000 | 用 config | 实际 = D57 × 100(默认 500000)|
+| `D58` | uint16 | ratio_min × 10 | 15 | 用 config | 实际 = D58 ÷ 10(默认 1.5)|
+| `D59` | uint16 | ratio_max × 10 | 35 | 用 config | 实际 = D59 ÷ 10(默认 3.5)|
+| **`D60-D63`** | uint16 ×4 | manual_roi (x1,y1,x2,y2) | (0,0,0,0) | (0,0,0,0)=auto-detect | 像素坐标 |
+
+> **Dual-track**:任何字段 PLC 写 0 → fallback 到 `config.json:legacy_brush_head_defaults` 的对应字段(再没就 hardcoded 内置值)。客户最少 PLC 改动 = 加一行 `D2=2` 触发即可跑,所有参数都从 config 走默认。
+
+**PLC 读(结果)**
+
+| 地址 | 类型 | 名称 | 含义 |
+|:-:|:-:|:--|:--|
+| `D0` | uint16 | result | 1=OK(含 Front/Back),2=NG |
+| `D42` | uint16 | brush_dot_count | dot 数(诊断,目前固定 0,reserved)|
+| `D43` | uint16 | brush_area_x100 | ROI 面积 ÷ 100(诊断,目前固定 0)|
+
+**判定**:adaptive threshold → 找 dot 凸包 → minAreaRect → 验证 area + ratio → ROI 旋转水平 + shrink → 上下半暗像素密度比较 → upper > lower=Front (OK) / upper < lower=Back (OK) / 相等=NG
+
+### L.0.4 物理隔离区域全图
+
+```
+D0   ─── 系统结果(共用)
+D1   ─── 系统触发(共用)
+D2   ─── 模式选择(共用)0/1/2
+D3-4 ─── 相机状态(共用)
+D5-9 ─── reserved
+D10-11   FRONTBACK 段(cam exposures)
+D12-15   reserved(v0.3.14/15 曾用 brush_head;v0.3.16 移到 D50-D63 完全独立)
+D16-19   reserved
+D20-23   FRONTBACK 输出(edge counts uint32 ×2)
+D24-29   reserved
+D30-36   HEIGHT 段(cam2 exp + 算法参数)
+D37-39   reserved
+D40-41   HEIGHT 输出
+D42-43   BRUSH_HEAD 输出(诊断)
+D44-49   reserved
+D50-63   BRUSH_HEAD 段(完整 14-word 独立配置)
+```
+
+**FRONTBACK / HEIGHT / BRUSH_HEAD 三个段物理零重叠**(除系统级 D0-D4 + D2 mode 选择器),客户 PLC ladder 三个模式互不干扰。
+
+### L.0.5 触发时序(三个模式都一样)
+
+```
+                单次 FIRE                       LOOP
+  PLC 写 D2=mode + D1=10                PLC 写 D2=mode + D1=11
+                ↓                                  ↓
+  视觉读 D2 + D1 → 看到 10              视觉读 D1 → 11 → 进 LOOP
+  视觉写 D1=0 (ack)                     视觉不动 D1
+  视觉跑算法                            视觉持续读 D1+D2:
+  视觉写 D0/D3/D4/...(模式相关)            如果 D1 还是 11 → 继续抓
+  视觉写 D1=1 (done)                       如果 D1 ≠ 11 → 退出 LOOP
+                ↓                       跑算法 → 写 D0 等(每 cycle)
+  PLC 监 D1==1 → 读 D0 等
+                                        操作员 PLC 写 D1=0 停 LOOP
+```
+
+---
+
 ## L.1 寄存器全表
 
 ### 系统级 + 配置(PLC 写,视觉读)
