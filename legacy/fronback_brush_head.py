@@ -42,12 +42,15 @@ from processing.result import ProcessResult
 @dataclass(frozen=True)
 class BrushHeadCycleResult:
     """One brush-head cycle's result, ready for the orchestrator to write
-    to PLC + display."""
+    to PLC + display.
+
+    dot_count / area were here in v0.3.16-v0.3.25 but removed in v0.3.27
+    along with the D42/D43 PLC writes — BrushHeadProcessor.Outcome
+    doesn't surface them yet, so the values were always 0.
+    """
 
     plc_result: int  # D0: 1=OK, 2=NG
-    side_code: int  # D44 (v0.3.24+): 1=Front, 2=Back, 0=UNKNOWN
-    dot_count: int  # D42 (clamped to uint16 by writer)
-    area: int  # D43 (raw; writer divides by 100)
+    side_code: int  # D70 (v0.3.24+): 1=Front, 2=Back, 0=UNKNOWN
     display_image: np.ndarray  # Visualization for the rgb565 sink
 
 
@@ -145,11 +148,10 @@ def run_brush_head(
     (that's what frontback D2=1 is for). Side detail is still visible
     on the operator screen via the visualization image.
 
-    dot_count and area aren't currently exposed by Outcome; they're
-    written to logs inside BrushHeadProcessor. For D42/D43 we report 0
-    until BrushHeadProcessor exposes them as fields (deliberately not
-    parsing log strings — too fragile). Customer PLCs that don't read
-    D42/D43 see no behavior change.
+    Diagnostic numbers (dot_count, ROI area) are still logged inside
+    BrushHeadProcessor for engineer inspection but no longer surfaced
+    to PLC — D42/D43 were removed in v0.3.27 because the values were
+    always 0 (Outcome doesn't carry them).
     """
     settings = _merge_with_defaults(legacy_settings, defaults)
     outcome = _PROCESSOR.process(image, settings)
@@ -169,7 +171,5 @@ def run_brush_head(
     return BrushHeadCycleResult(
         plc_result=plc_result,
         side_code=side_code,
-        dot_count=0,  # TODO(brush_head): expose via Outcome side-channel
-        area=0,
         display_image=outcome.image,
     )

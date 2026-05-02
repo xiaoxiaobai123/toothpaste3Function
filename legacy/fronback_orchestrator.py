@@ -435,12 +435,11 @@ class LegacyFronbackOrchestrator:
         cycle = await asyncio.to_thread(run_brush_head, img, settings, defaults)
 
         self.logger.info(
-            f"[Legacy] brush_head: D0={cycle.plc_result} dot_count={cycle.dot_count} area={cycle.area}"
+            f"[Legacy] brush_head: D0={cycle.plc_result} side={cycle.side_code}"
         )
 
         await asyncio.gather(
             asyncio.to_thread(self.plc.write_recognition_result, cycle.plc_result),
-            asyncio.to_thread(self.plc.write_brush_head_result, cycle.dot_count, cycle.area),
             asyncio.to_thread(self.plc.write_brush_side_code, cycle.side_code),
             asyncio.to_thread(self._render_brush_head_display, cycle.display_image),
         )

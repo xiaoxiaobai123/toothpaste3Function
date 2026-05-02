@@ -39,8 +39,11 @@ We write (PLC reads):
     D20-D23  edge1/edge2 count, each split into low+high uint16 words
     D40  height result (top-10 max-Y average)
     D41  height width result (kept at 0 — placeholder)
-    D42  brush_head dot count (additive extension; 0 = unset)
-    D43  brush_head detected area / 100 (additive extension)
+    (D42/D43 were brush_head diagnostics in v0.3.16-v0.3.25; removed
+    in v0.3.27 because BrushHeadProcessor.Outcome doesn't surface the
+    real values yet — writing constant 0 wasted a Modbus round-trip
+    and offered no PLC-side value. If/when Outcome gets a side-channel,
+    these may reappear at D72/D73 alongside D70 brush_side_code.)
 
 Notes:
     * D12/D13 (`unrecognized_threshold`) are *not* read by this adapter.
@@ -93,11 +96,6 @@ REG_HEIGHT_COMPARISON = 35
 REG_HEIGHT_WIDTH_COMP = 36  # read but unused, kept for compat
 REG_HEIGHT_RESULT = 40
 REG_HEIGHT_WIDTH_RESULT = 41
-# Brush-head output diagnostics (D2=2 mode). Optional — clients that don't
-# read these still get OK/NG via D0.
-REG_BRUSH_DOT_COUNT = 42
-REG_BRUSH_AREA_X100 = 43
-
 # Service-liveness heartbeat (v0.3.24+, all modes). Toggles 0/1 once per
 # second from a background task in LegacyFronbackOrchestrator. Sits in
 # the system-register area so PLC's watchdog can monitor a single
@@ -394,20 +392,6 @@ class LegacyFronbackPLC:
         ]
         with self._lock:
             self.plc.write_multiple_registers(REG_EDGE1_LOW, words)
-
-    def write_brush_head_result(self, dot_count: int, area: int) -> None:
-        """Write D42 (dot count) + D43 (detected area / 100) as a 2-word
-        block — used by the BRUSH_HEAD mode for diagnostic output.
-
-        side_code is intentionally NOT written here; it lives at D70
-        (separate output block) and goes through `write_brush_side_code`.
-        """
-        words = [
-            max(0, min(65535, int(dot_count))),
-            max(0, min(65535, int(area) // 100)),
-        ]
-        with self._lock:
-            self.plc.write_multiple_registers(REG_BRUSH_DOT_COUNT, words)
 
     def write_brush_side_code(self, side_code: int) -> None:
         """Write D70: 1=Front, 2=Back, 0=UNKNOWN.

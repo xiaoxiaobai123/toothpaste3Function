@@ -556,8 +556,8 @@ async def test_brush_head_d2_2_dispatches_brushhead_processor(
     deadline = asyncio.get_event_loop().time() + 3.0
     while asyncio.get_event_loop().time() < deadline:
         d0_done = any(addr == REG_RECOGNITION_RESULT for addr, _ in plc.writes)
-        d42_done = any(addr == 42 for addr, _ in plc.writes)
-        if d0_done and d42_done and rgb565_path.is_file():
+        d70_done = any(addr == 70 for addr, _ in plc.writes)
+        if d0_done and d70_done and rgb565_path.is_file():
             break
         await asyncio.sleep(0.05)
 
@@ -567,7 +567,9 @@ async def test_brush_head_d2_2_dispatches_brushhead_processor(
 
     addrs_written = [addr for addr, _ in plc.writes]
     assert REG_RECOGNITION_RESULT in addrs_written, "D0 not written for brush_head"
-    assert 42 in addrs_written, "D42/D43 brush diagnostic block not written"
+    assert 70 in addrs_written, "D70 brush_side_code not written"
+    # D42/D43 were removed in v0.3.27 — must NOT appear.
+    assert 42 not in addrs_written, "D42 should be gone (v0.3.27 removed)"
     # D3 cam1 status should be written (we touched cam1).
     assert REG_CAM1_STATUS in addrs_written
     # Frontback / height results MUST NOT be written by brush_head mode.

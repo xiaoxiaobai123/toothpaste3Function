@@ -295,24 +295,6 @@ def test_read_brush_head_settings_returns_none_on_failure(fake: FakePLCBase) -> 
     assert legacy.read_brush_head_settings() is None
 
 
-def test_write_brush_head_result_uses_block_write_at_d42(fake: FakePLCBase) -> None:
-    """2-word block at D42 — dot_count + area÷100. side_code lives at
-    D70 via a separate writer (`write_brush_side_code`), not bundled here."""
-    legacy = LegacyFronbackPLC(plc_base=fake)
-    legacy.write_brush_head_result(dot_count=42, area=12345)
-    # area /100 -> 123
-    assert fake.writes_block == [(42, [42, 123])]
-
-
-def test_write_brush_head_result_clamps_to_uint16(fake: FakePLCBase) -> None:
-    legacy = LegacyFronbackPLC(plc_base=fake)
-    legacy.write_brush_head_result(dot_count=99999, area=99999999)
-    assert fake.writes_block == [(42, [65535, 65535])]
-    fake.writes_block.clear()
-    legacy.write_brush_head_result(dot_count=-5, area=-100)
-    assert fake.writes_block == [(42, [0, 0])]
-
-
 def test_write_brush_side_code_uses_single_register_at_d70(fake: FakePLCBase) -> None:
     """v0.3.24+: front/back classification at D70, distinct from D0
     OK/NG. 1=Front, 2=Back, 0=UNKNOWN."""
