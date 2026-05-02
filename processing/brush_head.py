@@ -120,12 +120,17 @@ class BrushHeadProcessor(Processor):
                 )
                 # _find_roi_by_dots ran on `search_gray` which may have
                 # been pre-cropped to manual_roi — translate the box
-                # back to full-image coords so the orange overlay lands
-                # on the right pixels. dot centroids are translated
+                # and hull back to full-image coords so the overlays
+                # land on the right pixels. dot centroids are translated
                 # inside _fail_image via `dots_offset` instead.
                 failed_box = diag.get("failed_box")
-                if failed_box is not None and use_manual_roi:
-                    failed_box = failed_box + np.array(manual_roi_offset, dtype=np.float32)
+                hull = diag.get("hull")
+                if use_manual_roi:
+                    offset_arr = np.array(manual_roi_offset, dtype=np.float32)
+                    if failed_box is not None:
+                        failed_box = failed_box + offset_arr
+                    if hull is not None:
+                        hull = hull + offset_arr.reshape(1, 1, 2)
 
                 return Outcome(
                     ProcessResult.NG,
@@ -140,6 +145,7 @@ class BrushHeadProcessor(Processor):
                         roi_area=float(diag.get("roi_area", 0.0)),
                         roi_ratio=float(diag.get("roi_ratio", 0.0)),
                         failed_box=failed_box,
+                        hull=hull,
                         dots=diag.get("dots"),
                         dots_offset=manual_roi_offset if use_manual_roi else (0, 0),
                     ),
@@ -147,14 +153,16 @@ class BrushHeadProcessor(Processor):
                     0.0,
                 )
 
-            rect, box, _, roi_area, roi_ratio, dot_count = roi_result
+            rect, box, hull, roi_area, roi_ratio, dot_count = roi_result
             # When pre-cropped, _find_roi_by_dots returns coordinates in the
-            # SUB-image frame. Translate everything back to the full-image
-            # frame so the rotation matrix and downstream draws operate on
-            # the original-image coordinate system. (No-op when no manual ROI.)
+            # SUB-image frame. Translate everything (box, hull, rect.center)
+            # back to the full-image frame so the rotation matrix and
+            # downstream draws operate on the original-image coordinate
+            # system. (No-op when no manual ROI.)
             if use_manual_roi:
                 offset = np.array(manual_roi_offset, dtype=np.float32)
                 box = box + offset
+                hull = hull + offset.reshape(1, 1, 2)
                 rect = (
                     (rect[0][0] + manual_roi_offset[0], rect[0][1] + manual_roi_offset[1]),
                     rect[1],
@@ -246,6 +254,7 @@ class BrushHeadProcessor(Processor):
                 roi_ratio,
                 manual_roi=visual_manual_roi,
                 manual_roi_label=manual_roi_label,
+                hull=hull,
             )
 
             # The Outcome.center carries the side code (head repo convention):
@@ -384,6 +393,11 @@ class BrushHeadProcessor(Processor):
             # was here" and can immediately tell whether the dot detector
             # picked up the wrong region.
             "failed_box": None,
+            # Convex hull of the detected dots — drawn cyan so the
+            # operator sees the algorithm's actual wrap shape, not just
+            # the rotated minAreaRect (which can have corners outside
+            # the hull and look disconnected from the bristle dots).
+            "hull": None,
             # All detected dot centroids (in sub-image coords). When too
             # few dots, drawing them as small circles tells the operator
             # whether the adaptive threshold even detected anything.
@@ -436,6 +450,12 @@ class BrushHeadProcessor(Processor):
         # up the wrong region (e.g. background reflections were counted
         # as bristle dots, ballooning the convex hull).
         self._last_fail_diag["failed_box"] = box
+        # Also stash the convex hull itself — drawn in cyan on both
+        # success and fail screens so the operator sees the actual
+        # geometry the algorithm wrapped around the dots, not just the
+        # rotated minAreaRect (which can have corners outside the hull
+        # and looks visually disconnected from the bristle pattern).
+        self._last_fail_diag["hull"] = hull
 
         if not (bp["roi_area_min"] <= roi_area <= bp["roi_area_max"]):
             reason = f"area {roi_area:.0f} not in [{bp['roi_area_min']:.0f}, {bp['roi_area_max']:.0f}]"
@@ -614,6 +634,7 @@ class BrushHeadProcessor(Processor):
         roi_area: float = 0.0,
         roi_ratio: float = 0.0,
         failed_box: np.ndarray | None = None,
+        hull: np.ndarray | None = None,
         dots: list[tuple[float, float]] | None = None,
         dots_offset: tuple[int, int] = (0, 0),
     ) -> np.ndarray:
@@ -661,6 +682,15 @@ class BrushHeadProcessor(Processor):
                 scale=0.5,
                 thickness=1,
             )
+
+        if hull is not None:
+            # Cyan polygon (BGR (255, 255, 0)) — the convex hull of the
+            # detected dots. Drawn before the orange minAreaRect so the
+            # rectangle lays on top; together they tell the operator
+            # "the algorithm wrapped *this* shape (cyan) around the dots
+            # (blue), then computed *that* rectangle (orange) as the
+            # rotated bounding box".
+            cv2.drawContours(vis, [hull.astype(np.intp)], -1, (255, 255, 0), 2)
 
         if failed_box is not None:
             # Orange outline (BGR (0, 165, 255)) — distinct from the
@@ -726,6 +756,7 @@ class BrushHeadProcessor(Processor):
         roi_ratio: float,
         manual_roi: tuple[int, int, int, int] | None = None,
         manual_roi_label: str = "Manual ROI",
+        hull: np.ndarray | None = None,
     ) -> np.ndarray:
         vis = original.copy()
 
@@ -743,6 +774,14 @@ class BrushHeadProcessor(Processor):
                 scale=0.5,
                 thickness=1,
             )
+
+        # Convex hull (cyan) — drawn before the red ROI so the rotated
+        # rectangle lays on top. Without this overlay the operator sees
+        # the rotated red rect "floating" with no obvious connection to
+        # the bristle pattern; the hull shows the actual shape the
+        # algorithm wrapped around the dot cloud.
+        if hull is not None:
+            cv2.drawContours(vis, [hull.astype(np.intp)], -1, (255, 255, 0), 2)
 
         roi_corners = self._transform_rect_to_original(M_inv, *roi_rect_rot)
         cv2.drawContours(vis, [roi_corners], -1, (0, 0, 255), 2)
@@ -802,7 +841,7 @@ class BrushHeadProcessor(Processor):
 
         self._put_text(
             vis,
-            "Red=ROI  Green=Analysis  Yellow=Split",
+            "Cyan=Hull  Red=ROI  Green=Analysis  Yellow=Split",
             (30, img_h - 15),
             color=(0, 255, 0),
             scale=0.5,
