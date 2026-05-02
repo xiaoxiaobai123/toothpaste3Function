@@ -189,8 +189,10 @@ def test_frontback_can_disable_either_sink(tmp_path: Path) -> None:
 # ----------------------------------------------------------------------
 # render_height
 # ----------------------------------------------------------------------
-def test_height_writes_raw_image_to_png(tmp_path: Path) -> None:
-    """Original height path just dumps the captured image unchanged."""
+def test_height_writes_image_with_company_banner_to_png(tmp_path: Path) -> None:
+    """v0.3.21+: height path now stamps the company-name banner on top
+    (matches frontback behaviour). Width unchanged; height grows by the
+    banner height (variable, depending on company_name.png aspect)."""
     out = tmp_path / "height.png"
     img = _solid(640, 480, (123, 45, 67))
 
@@ -198,11 +200,19 @@ def test_height_writes_raw_image_to_png(tmp_path: Path) -> None:
 
     rendered = cv2.imread(str(out))
     assert rendered is not None
-    assert rendered.shape == img.shape
-    assert np.array_equal(rendered, img)
+    rh, rw = rendered.shape[:2]
+    # Width preserved; height >= original (banner adds rows on top, when
+    # the company_name.png is available — otherwise the wrap is a no-op
+    # and the dimensions are unchanged).
+    assert rw == 640, f"expected width 640, got {rw}"
+    assert rh >= 480, f"expected height >= 480 (with banner), got {rh}"
+    # Bottom portion (the original height frame) is the unchanged pixel data.
+    body = rendered[rh - 480 : rh, :]
+    assert np.array_equal(body, img), "original cam2 pixels must survive under the banner"
 
 
-def test_height_writes_rgb565_dimensions_match_input(tmp_path: Path) -> None:
+def test_height_writes_rgb565_dimensions_with_company_banner(tmp_path: Path) -> None:
+    """rgb565 sink mirrors PNG: width unchanged, height ≥ original."""
     out = tmp_path / "height.rgb565"
     img = _solid(640, 480, (123, 45, 67))
 
@@ -211,7 +221,7 @@ def test_height_writes_rgb565_dimensions_match_input(tmp_path: Path) -> None:
     data = out.read_bytes()
     width, height = struct.unpack("<ii", data[:8])
     assert width == 640
-    assert height == 480
+    assert height >= 480
 
 
 # ----------------------------------------------------------------------

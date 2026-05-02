@@ -317,6 +317,12 @@ def render_height(
 
     All three default off; passing 0/empty keeps the original behaviour
     (raw frame, byte-identical to the source program's PNG output).
+
+    v0.3.21+: company-name banner stamped on top, matching frontback
+    mode. Same width-keyed cache (`processing.display_utils._get_company_bar`)
+    so disk IO only happens once per output width. Tolerant: if
+    company_name.png is missing on a fresh dev machine, the banner is
+    skipped and the cam-only frame ships through unchanged.
     """
     annotated = _draw_height_overlays(
         image,
@@ -325,6 +331,12 @@ def render_height(
         comparison=comparison,
         top_columns=top_columns,
     )
+    # Company-name banner stacked on top — same as frontback. Tolerant
+    # of a missing company_name.png on a fresh dev machine.
+    try:
+        annotated = add_company_name(annotated)
+    except Exception as e:
+        logger.warning(f"[Legacy] height company_name overlay skipped: {e}")
     annotated = _maybe_fit_to_fb(annotated)
     _write_sinks(annotated, png_path, rgb565_path)
     return annotated
