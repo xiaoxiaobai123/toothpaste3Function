@@ -325,17 +325,17 @@ def test_write_brush_side_code_uses_single_register_at_d70(fake: FakePLCBase) ->
     assert fake.writes_single == [(70, 1), (70, 2), (70, 0), (70, 65535), (70, 0)]
 
 
-def test_write_system_heartbeat_uses_single_register_at_d6(fake: FakePLCBase) -> None:
-    """v0.3.24+: heartbeat toggle goes to D6 (single-register write,
-    system-area placement so all three modes share one watchdog
-    address). Background task in the orchestrator alternates 0/1 each
-    second."""
+def test_write_system_heartbeat_uses_single_register_at_d9(fake: FakePLCBase) -> None:
+    """v0.3.25+: heartbeat moved D6 → D9 per customer request. Single-
+    register write, system-area placement so all three modes share one
+    watchdog address. Background task in the orchestrator alternates
+    0/1 each second."""
     legacy = LegacyFronbackPLC(plc_base=fake)
     legacy.write_system_heartbeat(0)
     legacy.write_system_heartbeat(1)
     legacy.write_system_heartbeat(70000)  # over uint16 → clamp to 65535
     legacy.write_system_heartbeat(-1)  # negative → clamp to 0
-    assert fake.writes_single == [(6, 0), (6, 1), (6, 65535), (6, 0)]
+    assert fake.writes_single == [(9, 0), (9, 1), (9, 65535), (9, 0)]
 
 
 def test_write_edge_counts_uses_block_write_at_d20(fake: FakePLCBase) -> None:

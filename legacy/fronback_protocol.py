@@ -100,7 +100,7 @@ REG_BRUSH_AREA_X100 = 43
 # second from a background task in LegacyFronbackOrchestrator. Sits in
 # the system-register area so PLC's watchdog can monitor a single
 # address regardless of which mode is active.
-REG_SYSTEM_HEARTBEAT = 6
+REG_SYSTEM_HEARTBEAT = 9
 
 # Brush-head side code (v0.3.24+, brush_head mode only). Lets clients
 # distinguish front (1) vs back (2) without re-purposing D0's OK/NG
@@ -420,7 +420,7 @@ class LegacyFronbackPLC:
             self.plc.write_status(REG_BRUSH_SIDE_CODE, max(0, min(65535, int(side_code))))
 
     def write_system_heartbeat(self, value: int) -> None:
-        """Toggle D6 between 0/1 (or whatever uint16 the caller passes)
+        """Toggle D9 between 0/1 (or whatever uint16 the caller passes)
         as a watchdog signal. The orchestrator's background heartbeat
         task is the only expected caller.
         """
