@@ -12,6 +12,7 @@
 | `D2` | PLC→视觉 | uint16 | mode | **写 0 选 height** |
 | `D3` | 视觉→PLC | uint16 | cam1_status | 1=online / 0=offline |
 | `D4` | 视觉→PLC | uint16 | cam2_status | 同上 |
+| `D6` | 视觉→PLC | uint16 | system_heartbeat | 每秒翻 0/1,PLC watchdog 监视 |
 
 ## PLC 写
 

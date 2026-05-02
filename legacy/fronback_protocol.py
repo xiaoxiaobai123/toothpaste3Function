@@ -96,6 +96,18 @@ REG_HEIGHT_WIDTH_RESULT = 41
 REG_BRUSH_DOT_COUNT = 42
 REG_BRUSH_AREA_X100 = 43
 
+# Service-liveness heartbeat (v0.3.24+, all modes). Toggles 0/1 once per
+# second from a background task in LegacyFronbackOrchestrator. Sits in
+# the system-register area so PLC's watchdog can monitor a single
+# address regardless of which mode is active.
+REG_SYSTEM_HEARTBEAT = 6
+
+# Brush-head side code (v0.3.24+, brush_head mode only). Lets clients
+# distinguish front (1) vs back (2) without re-purposing D0's OK/NG
+# semantics. 0 = UNKNOWN (NG). Placed at D70 so the brush_head output
+# block stays separate from the diagnostic block (D42-D43).
+REG_BRUSH_SIDE_CODE = 70
+
 # Brush-head parameter block (D2=2 mode). v0.3.16+: physically separated
 # from frontback / height registers so the customer's PLC ladder for the
 # three modes never overlap (except the system-level D0-D4 + D2 selector).
@@ -385,10 +397,8 @@ class LegacyFronbackPLC:
         """Write D42 (dot count) + D43 (detected area / 100) as a 2-word
         block — used by the BRUSH_HEAD mode for diagnostic output.
 
-        Both values are clamped to uint16 range. The area is stored
-        scaled-down because typical bristle-head ROIs are 50k-500k pixels,
-        which would overflow a single 16-bit register; /100 keeps a useful
-        resolution while fitting.
+        side_code is intentionally NOT written here; it lives at D70
+        (separate output block) and goes through `write_brush_side_code`.
         """
         words = [
             max(0, min(65535, int(dot_count))),
@@ -396,6 +406,26 @@ class LegacyFronbackPLC:
         ]
         with self._lock:
             self.plc.write_multiple_registers(REG_BRUSH_DOT_COUNT, words)
+
+    def write_brush_side_code(self, side_code: int) -> None:
+        """Write D70: 1=Front, 2=Back, 0=UNKNOWN.
+
+        Single-register write rather than block-extending D42-D43,
+        because the side code is a different output block (operator
+        result vs diagnostic numbers) and PLC ladders typically read
+        OK/NG + side from one block and dot/area from elsewhere only
+        when troubleshooting.
+        """
+        with self._lock:
+            self.plc.write_status(REG_BRUSH_SIDE_CODE, max(0, min(65535, int(side_code))))
+
+    def write_system_heartbeat(self, value: int) -> None:
+        """Toggle D6 between 0/1 (or whatever uint16 the caller passes)
+        as a watchdog signal. The orchestrator's background heartbeat
+        task is the only expected caller.
+        """
+        with self._lock:
+            self.plc.write_status(REG_SYSTEM_HEARTBEAT, max(0, min(65535, int(value))))
 
     def write_height_result(self, max_y_avg: int) -> None:
         """Write D40. D41 (width result) is left at whatever PLC last wrote;

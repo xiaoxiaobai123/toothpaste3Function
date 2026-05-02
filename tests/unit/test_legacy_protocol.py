@@ -296,21 +296,46 @@ def test_read_brush_head_settings_returns_none_on_failure(fake: FakePLCBase) -> 
 
 
 def test_write_brush_head_result_uses_block_write_at_d42(fake: FakePLCBase) -> None:
+    """2-word block at D42 — dot_count + area÷100. side_code lives at
+    D70 via a separate writer (`write_brush_side_code`), not bundled here."""
     legacy = LegacyFronbackPLC(plc_base=fake)
     legacy.write_brush_head_result(dot_count=42, area=12345)
-    # area is /100 before being written: 12345 // 100 = 123
+    # area /100 -> 123
     assert fake.writes_block == [(42, [42, 123])]
 
 
 def test_write_brush_head_result_clamps_to_uint16(fake: FakePLCBase) -> None:
     legacy = LegacyFronbackPLC(plc_base=fake)
-    # Big values: dot_count clamped to 65535, area /100 also clamped.
     legacy.write_brush_head_result(dot_count=99999, area=99999999)
     assert fake.writes_block == [(42, [65535, 65535])]
     fake.writes_block.clear()
-    # Negative values clamped to 0.
     legacy.write_brush_head_result(dot_count=-5, area=-100)
     assert fake.writes_block == [(42, [0, 0])]
+
+
+def test_write_brush_side_code_uses_single_register_at_d70(fake: FakePLCBase) -> None:
+    """v0.3.24+: front/back classification at D70, distinct from D0
+    OK/NG. 1=Front, 2=Back, 0=UNKNOWN."""
+    legacy = LegacyFronbackPLC(plc_base=fake)
+    legacy.write_brush_side_code(1)
+    legacy.write_brush_side_code(2)
+    legacy.write_brush_side_code(0)
+    legacy.write_brush_side_code(99999)  # over uint16 → clamp to 65535
+    legacy.write_brush_side_code(-1)  # negative → clamp to 0
+    assert fake.writes_single == [(70, 1), (70, 2), (70, 0), (70, 65535), (70, 0)]
+
+
+def test_write_system_heartbeat_uses_single_register_at_d6(fake: FakePLCBase) -> None:
+    """v0.3.24+: heartbeat toggle goes to D6 (single-register write,
+    system-area placement so all three modes share one watchdog
+    address). Background task in the orchestrator alternates 0/1 each
+    second."""
+    legacy = LegacyFronbackPLC(plc_base=fake)
+    legacy.write_system_heartbeat(0)
+    legacy.write_system_heartbeat(1)
+    legacy.write_system_heartbeat(70000)  # over uint16 → clamp to 65535
+    legacy.write_system_heartbeat(-1)  # negative → clamp to 0
+    assert fake.writes_single == [(6, 0), (6, 1), (6, 65535), (6, 0)]
 
 
 def test_write_edge_counts_uses_block_write_at_d20(fake: FakePLCBase) -> None:

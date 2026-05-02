@@ -182,8 +182,8 @@ def test_merge_preserves_adapt_C_default_from_config() -> None:
 # --------------------------------------------------------------------------- #
 # run_brush_head: Outcome → BrushHeadCycleResult mapping.
 # --------------------------------------------------------------------------- #
-def test_run_brush_head_maps_ok_to_recognition_result_1(monkeypatch) -> None:
-    """OK Outcome → D0 = RESULT_FRONT_OR_OK (1)."""
+def test_run_brush_head_ok_front_maps_to_d0_1_d44_1(monkeypatch) -> None:
+    """OK + side=Front → D0 = RESULT_FRONT_OR_OK (1), D44 (side_code) = 1."""
     img = np.zeros((100, 100, 3), dtype=np.uint8)
     fake_outcome = Outcome(
         result=ProcessResult.OK,
@@ -204,7 +204,54 @@ def test_run_brush_head_maps_ok_to_recognition_result_1(monkeypatch) -> None:
     result = run_brush_head(img, _zero_settings(), _DEFAULTS)
     assert isinstance(result, BrushHeadCycleResult)
     assert result.plc_result == RESULT_FRONT_OR_OK
+    assert result.side_code == 1
     assert result.display_image is fake_outcome.image
+
+
+def test_run_brush_head_ok_back_maps_to_d0_1_d44_2(monkeypatch) -> None:
+    """OK + side=Back → D0 still RESULT_FRONT_OR_OK (1) [OK semantics],
+    D44 (side_code) = 2 to distinguish back from front."""
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    fake_outcome = Outcome(
+        result=ProcessResult.OK,
+        image=np.zeros((100, 100, 3), dtype=np.uint8),
+        center=(2.0, 0.0),  # side=2 (Back)
+        angle=0.0,
+    )
+    from legacy import fronback_brush_head
+
+    monkeypatch.setattr(
+        fronback_brush_head._PROCESSOR,
+        "process",
+        lambda image, settings: fake_outcome,
+    )
+
+    result = run_brush_head(img, _zero_settings(), _DEFAULTS)
+    assert result.plc_result == RESULT_FRONT_OR_OK  # still 1 = OK
+    assert result.side_code == 2  # but Back via D44
+
+
+def test_run_brush_head_ok_unknown_side_maps_to_d44_0(monkeypatch) -> None:
+    """OK Outcome with side=0 (algorithm couldn't classify but didn't fail)
+    leaves D44 at 0 (UNKNOWN) — D0 still says OK."""
+    img = np.zeros((100, 100, 3), dtype=np.uint8)
+    fake_outcome = Outcome(
+        result=ProcessResult.OK,
+        image=np.zeros((100, 100, 3), dtype=np.uint8),
+        center=(0.0, 0.0),  # side=0 (UNKNOWN)
+        angle=0.0,
+    )
+    from legacy import fronback_brush_head
+
+    monkeypatch.setattr(
+        fronback_brush_head._PROCESSOR,
+        "process",
+        lambda image, settings: fake_outcome,
+    )
+
+    result = run_brush_head(img, _zero_settings(), _DEFAULTS)
+    assert result.plc_result == RESULT_FRONT_OR_OK
+    assert result.side_code == 0
 
 
 def test_run_brush_head_maps_ng_to_recognition_result_2(monkeypatch) -> None:

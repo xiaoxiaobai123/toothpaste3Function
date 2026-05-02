@@ -22,6 +22,7 @@ that does not change observable PLC behaviour.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import Callable
@@ -152,23 +153,52 @@ class LegacyFronbackOrchestrator:
             return
 
         self.logger.info(f"[Legacy] orchestrator started (active cameras: {active})")
+
+        # Spawn the system-heartbeat task — toggles D45 once per second so
+        # PLC's watchdog can detect a hung / crashed vision binary even
+        # while no FIRE / LOOP is happening. Cancelled below if `run()` is
+        # itself cancelled.
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+        try:
+            while True:
+                try:
+                    state = await asyncio.to_thread(self.plc.read_trigger_and_mode)
+                    if state is None:
+                        await asyncio.sleep(POLL_INTERVAL_S)
+                        continue
+                    if state.trigger == TRIGGER_FIRE:
+                        await self._handle_capture(state.mode)
+                    elif state.trigger == TRIGGER_LOOP:
+                        await self._do_loop()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    # Throttled — same exception per-iteration would flood the log.
+                    self.throttled.error(f"[Legacy] loop exception: {e}")
+                    await asyncio.sleep(1.0)
+                await asyncio.sleep(POLL_INTERVAL_S)
+        finally:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
+
+    async def _heartbeat_loop(self) -> None:
+        """Toggle D45 once per second so PLC's watchdog can verify the
+        vision binary is alive (Modbus reachable AND program running).
+        Failures are throttled — a transient PLC blip shouldn't flood
+        the log with one warning per second.
+        """
+        toggle = 0
         while True:
             try:
-                state = await asyncio.to_thread(self.plc.read_trigger_and_mode)
-                if state is None:
-                    await asyncio.sleep(POLL_INTERVAL_S)
-                    continue
-                if state.trigger == TRIGGER_FIRE:
-                    await self._handle_capture(state.mode)
-                elif state.trigger == TRIGGER_LOOP:
-                    await self._do_loop()
+                await asyncio.to_thread(self.plc.write_system_heartbeat, toggle)
+                toggle ^= 1
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                # Throttled — same exception per-iteration would flood the log.
-                self.throttled.error(f"[Legacy] loop exception: {e}")
-                await asyncio.sleep(1.0)
-            await asyncio.sleep(POLL_INTERVAL_S)
+                self.throttled.warning(f"[Legacy] heartbeat write failed: {e}")
+            await asyncio.sleep(1.0)
 
     async def _handle_capture(self, mode: int) -> None:
         # Acknowledge: set trigger -> 0 so PLC sees we accepted the command.
@@ -411,6 +441,7 @@ class LegacyFronbackOrchestrator:
         await asyncio.gather(
             asyncio.to_thread(self.plc.write_recognition_result, cycle.plc_result),
             asyncio.to_thread(self.plc.write_brush_head_result, cycle.dot_count, cycle.area),
+            asyncio.to_thread(self.plc.write_brush_side_code, cycle.side_code),
             asyncio.to_thread(self._render_brush_head_display, cycle.display_image),
         )
 

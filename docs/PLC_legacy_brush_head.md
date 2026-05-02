@@ -12,6 +12,7 @@
 | `D2` | PLC→视觉 | uint16 | mode | **写 2 选 brush_head** |
 | `D3` | 视觉→PLC | uint16 | cam1_status | 1=online / 0=offline |
 | `D4` | 视觉→PLC | uint16 | cam2_status | 同上 |
+| `D6` | 视觉→PLC | uint16 | system_heartbeat | 每秒翻 0/1,PLC watchdog 监视 |
 
 ## PLC 写
 
@@ -41,11 +42,20 @@
 | `D0` | uint16 | result(1=OK / 2=NG)|
 | `D42` | uint16 | brush_dot_count(诊断,目前固定 0)|
 | `D43` | uint16 | brush_area ÷100(诊断,目前固定 0)|
+| `D70` | uint16 | brush_side_code(1=Front / 2=Back / 0=UNKNOWN)|
+
+D0 + D70 配套使用:
+
+| D0 | D70 | 含义 |
+|:-:|:-:|:--|
+| 1 | 1 | OK,正面 |
+| 1 | 2 | OK,反面 |
+| 2 | 0 | NG(检测失败)|
 
 ## 触发
 
 ```
-单次:  PLC 写 D2=2, D1=10  →  视觉跑完写 D0/D42/D43 + D1=1
-LOOP:  PLC 写 D2=2, D1=11  →  视觉持续跑,每 cycle 写 D0/D42/D43
+单次:  PLC 写 D2=2, D1=10  →  视觉跑完写 D0/D42/D43/D70 + D1=1
+LOOP:  PLC 写 D2=2, D1=11  →  视觉持续跑,每 cycle 写 D0/D42/D43/D70
                             →  PLC 写 D1=0 停止
 ```

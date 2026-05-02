@@ -45,6 +45,7 @@ class BrushHeadCycleResult:
     to PLC + display."""
 
     plc_result: int  # D0: 1=OK, 2=NG
+    side_code: int  # D44 (v0.3.24+): 1=Front, 2=Back, 0=UNKNOWN
     dot_count: int  # D42 (clamped to uint16 by writer)
     area: int  # D43 (raw; writer divides by 100)
     display_image: np.ndarray  # Visualization for the rgb565 sink
@@ -153,10 +154,21 @@ def run_brush_head(
     settings = _merge_with_defaults(legacy_settings, defaults)
     outcome = _PROCESSOR.process(image, settings)
 
-    plc_result = RESULT_FRONT_OR_OK if outcome.result == ProcessResult.OK else RESULT_BACK_OR_NG
+    # D0 = OK/NG (legacy contract; existing PLC ladders read this).
+    # D44 = side code for clients that need to distinguish Front vs Back
+    # without coupling to D0's OK/NG semantics. BrushHeadProcessor's
+    # Outcome.center.x carries the side: 1=Front, 2=Back, 0=NG/UNKNOWN.
+    if outcome.result == ProcessResult.OK:
+        plc_result = RESULT_FRONT_OR_OK  # 1 = OK
+        side = int(outcome.center[0])
+        side_code = side if side in (1, 2) else 0
+    else:
+        plc_result = RESULT_BACK_OR_NG  # 2 = NG
+        side_code = 0
 
     return BrushHeadCycleResult(
         plc_result=plc_result,
+        side_code=side_code,
         dot_count=0,  # TODO(brush_head): expose via Outcome side-channel
         area=0,
         display_image=outcome.image,
