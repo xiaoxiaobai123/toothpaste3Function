@@ -86,14 +86,22 @@ class BrushHeadProcessor(Processor):
             h_img, w_img = gray.shape
 
             # 1. Optional manual pre-crop. When PLC sets D110-D113 (cam1) /
-            # D114-D117 (cam2) to a valid rect, narrow the search area before
-            # dot detection — same logic as toothpasthead's original code.
+            # D114-D117 (cam2) — or D60-D63 in the legacy brush_head path —
+            # to a valid rect, narrow the search area before dot detection.
+            #
+            # "Set" = any of the four words is non-zero AND the rectangle
+            # has positive area after clamping to image bounds. The earlier
+            # `[0] > 0 and [1] > 0` check rejected legitimate ROIs starting
+            # at x=0 or y=0 (e.g. PLC writing (0, 100, 800, 600) — meant
+            # to crop the top portion of the frame from the left edge —
+            # was silently treated as auto-detect, and the operator's
+            # purple Manual ROI overlay never appeared).
             mx1, my1, mx2, my2 = bp["manual_roi"]
             mx2 = min(int(mx2), w_img)
             my2 = min(int(my2), h_img)
             mx1 = max(0, int(mx1))
             my1 = max(0, int(my1))
-            use_manual_roi = bp["manual_roi"][0] > 0 and bp["manual_roi"][1] > 0 and mx2 > mx1 and my2 > my1
+            use_manual_roi = any(bp["manual_roi"]) and mx2 > mx1 and my2 > my1
             if use_manual_roi:
                 search_gray = gray[my1:my2, mx1:mx2]
                 manual_roi_offset = (mx1, my1)
@@ -247,6 +255,30 @@ class BrushHeadProcessor(Processor):
                 scale=0.8,
                 thickness=2,
             )
+            # Operator-visible manual ROI even when the algorithm crashes
+            # before it could parse params normally — read from the raw
+            # settings so a malformed bp dict can't hide the configured
+            # rectangle. Wrapped so a second exception inside the
+            # exception handler can't take down the whole call.
+            try:
+                raw_manual = settings.get("manual_roi") or (0, 0, 0, 0)
+                if any(raw_manual):
+                    h_img, w_img = fail_vis.shape[:2]
+                    mx1, my1, mx2, my2 = (int(v) for v in raw_manual)
+                    mx1, my1 = max(0, mx1), max(0, my1)
+                    mx2, my2 = min(w_img, mx2), min(h_img, my2)
+                    if mx2 > mx1 and my2 > my1:
+                        cv2.rectangle(fail_vis, (mx1, my1), (mx2, my2), (255, 0, 255), 2)
+                        self._put_text(
+                            fail_vis,
+                            "Manual ROI",
+                            (mx1, max(0, my1 - 8)),
+                            color=(255, 0, 255),
+                            scale=0.5,
+                            thickness=1,
+                        )
+            except Exception:
+                pass
             return Outcome(ProcessResult.EXCEPTION, fail_vis, (0.0, 0.0), 0.0)
 
     # ------------------------------------------------------------------
