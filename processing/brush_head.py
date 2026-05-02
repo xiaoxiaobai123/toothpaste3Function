@@ -538,12 +538,12 @@ class BrushHeadProcessor(Processor):
                                        was rejected (vs silently ignored)
                                        so they know to fix D60-D63.
 
-        The "default visual rectangle" inset 5 px from each edge so it's
-        visually distinguishable from the frame border itself. Operator
-        always sees the purple overlay, even when PLC isn't writing
-        D60-D63 yet.
+        The "default visual rectangle" insets 30 px from each edge so
+        the "Manual ROI: ..." label drawn just above the rectangle is
+        actually on screen (5 px inset put the label at y = -3, off the
+        top edge — operator never saw it).
         """
-        full_visual = (5, 5, max(6, w_img - 5), max(6, h_img - 5))
+        full_visual = (30, 30, max(31, w_img - 30), max(31, h_img - 30))
 
         if not any(plc_roi):
             return full_visual, "Manual ROI: auto (full frame)", False
@@ -649,10 +649,14 @@ class BrushHeadProcessor(Processor):
         if manual_roi is not None:
             mx1, my1, mx2, my2 = manual_roi
             cv2.rectangle(vis, (mx1, my1), (mx2, my2), (255, 0, 255), 2)
+            # Label position: prefer just above the rect; if the rect
+            # starts within ~20 px of the top edge, the label would be
+            # clipped — drop it inside the rect's top-left instead.
+            label_y = my1 - 8 if my1 >= 25 else my1 + 18
             self._put_text(
                 vis,
                 manual_roi_label,
-                (mx1, max(0, my1 - 8)),
+                (mx1 + 4, label_y),
                 color=(255, 0, 255),
                 scale=0.5,
                 thickness=1,
@@ -730,10 +734,11 @@ class BrushHeadProcessor(Processor):
         if manual_roi is not None:
             mx1, my1, mx2, my2 = manual_roi
             cv2.rectangle(vis, (mx1, my1), (mx2, my2), (255, 0, 255), 2)
+            label_y = my1 - 8 if my1 >= 25 else my1 + 18
             self._put_text(
                 vis,
                 manual_roi_label,
-                (mx1, max(0, my1 - 8)),
+                (mx1 + 4, label_y),
                 color=(255, 0, 255),
                 scale=0.5,
                 thickness=1,

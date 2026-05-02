@@ -146,6 +146,20 @@ class ConfigManager:
         the config file still works.
         """
         cfg = self.config.get("legacy_brush_head_defaults", {})
+        # `manual_roi` is the most product-specific default — operator's
+        # camera placement determines where the brush head sits in the
+        # frame. (0,0,0,0) keeps the v0.3.16..v0.3.18 behaviour ("if PLC
+        # didn't set, scan the whole frame"); a specific 4-tuple lets
+        # the customer ship a sensible default rectangle so the operator
+        # sees a useful ROI even before they touch D60-D63.
+        raw_manual = cfg.get("manual_roi", (0, 0, 0, 0))
+        try:
+            manual_tuple = tuple(int(v) for v in raw_manual)
+            if len(manual_tuple) != 4:
+                manual_tuple = (0, 0, 0, 0)
+        except (TypeError, ValueError):
+            manual_tuple = (0, 0, 0, 0)
+
         return {
             "exposure": int(cfg.get("exposure", 5000)),
             "shrink_pct": int(cfg.get("shrink_pct", 15)),
@@ -157,6 +171,7 @@ class ConfigManager:
             "roi_area_max": int(cfg.get("roi_area_max", 500000)),
             "ratio_min": float(cfg.get("ratio_min", 1.5)),
             "ratio_max": float(cfg.get("ratio_max", 3.5)),
+            "manual_roi": manual_tuple,
         }
 
 

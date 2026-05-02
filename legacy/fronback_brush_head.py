@@ -104,11 +104,28 @@ def _merge_with_defaults(legacy: BrushHeadSettings, defaults: dict[str, Any]) ->
         legacy.ratio_max_x10 if legacy.ratio_max_x10 != 0 else int(round(float(defaults["ratio_max"]) * 10))
     )
 
+    # manual_roi merge: PLC overrides config; if PLC didn't set anything
+    # (all-zero), fall back to the config default — that default may
+    # itself be (0,0,0,0) for auto-detect, or a product-specific region
+    # the operator wants the algorithm to use out of the box.
+    plc_manual = tuple(int(v) for v in legacy.manual_roi)
+    if any(plc_manual):
+        final_manual = plc_manual
+    else:
+        cfg_manual_raw = defaults.get("manual_roi", (0, 0, 0, 0))
+        try:
+            cfg_manual = tuple(int(v) for v in cfg_manual_raw)
+            if len(cfg_manual) != 4:
+                cfg_manual = (0, 0, 0, 0)
+        except (TypeError, ValueError):
+            cfg_manual = (0, 0, 0, 0)
+        final_manual = cfg_manual
+
     return {
         "raw_config": raw,
-        # manual_roi falls through unchanged. (0,0,0,0) = auto-detect inside
-        # BrushHeadProcessor; non-zero rectangle pre-crops the image.
-        "manual_roi": legacy.manual_roi,
+        # (0,0,0,0) = auto-detect inside BrushHeadProcessor;
+        # non-zero rectangle pre-crops the image.
+        "manual_roi": final_manual,
     }
 
 

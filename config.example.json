@@ -26,7 +26,7 @@
         "ip": "192.168.1.10"
     },
 
-    "_comment_legacy_brush_head": "Defaults for legacy_fronback D2=2 (BRUSH_HEAD) mode. The PLC parameter block lives at D50-D63 — writing 0 to any slot means 'use these values'. Non-zero PLC writes override per cycle. adapt_C is not exposed via PLC (operator shouldn't tune the adaptive-threshold offset live); change it here if the algorithm starts misclassifying after a lighting change.",
+    "_comment_legacy_brush_head": "Defaults for legacy_fronback D2=2 (BRUSH_HEAD) mode. The PLC parameter block lives at D50-D63 — writing 0 to any slot means 'use these values'. Non-zero PLC writes override per cycle. adapt_C is not exposed via PLC (operator shouldn't tune the adaptive-threshold offset live); change it here if the algorithm starts misclassifying after a lighting change. manual_roi sets a default pre-crop rectangle (x1, y1, x2, y2) used when PLC D60-D63 are all 0 — set it to your camera's typical brush-head region so the operator sees a sensible ROI before they touch the PLC. Leave [0, 0, 0, 0] for full-frame auto-detect.",
     "legacy_brush_head_defaults": {
         "exposure": 5000,
         "shrink_pct": 15,
@@ -37,6 +37,7 @@
         "roi_area_min": 50000,
         "roi_area_max": 500000,
         "ratio_min": 1.5,
-        "ratio_max": 3.5
+        "ratio_max": 3.5,
+        "manual_roi": [0, 0, 0, 0]
     }
 }
