@@ -233,14 +233,22 @@ def test_brush_head_fail_image_draws_manual_roi() -> None:
     )
 
 
-def test_brush_head_fail_image_omits_manual_roi_when_none() -> None:
-    """If no manual ROI was active, the fail image must NOT contain a
-    purple rectangle (auto-detect fail looks like 'message + params only')."""
+def test_brush_head_fail_image_shows_default_manual_roi_when_plc_unset() -> None:
+    """v0.3.19+: even when PLC has not configured a manual ROI (all-zero),
+    the fail image must still contain a purple rectangle so the operator
+    sees an explicit "Manual ROI: auto (full frame)" overlay rather than
+    wondering whether the feature exists. Earlier (v0.3.10..v0.3.18) the
+    rectangle was suppressed in this case, which made operators unsure
+    whether D60-D63 was even being read."""
     img = np.full((600, 800, 3), 230, dtype=np.uint8)
     outcome = BrushHeadProcessor().process(img, _build_settings())  # default = auto
     assert outcome.result == ProcessResult.NG
     fail_img = outcome.image
 
-    # No purple should appear anywhere on the fail image (just red text + grey params).
+    # Purple = BGR (255, 0, 255) — should now appear outlining the inset
+    # full-frame default rectangle (5 px in from each edge).
     purple_pixels = ((fail_img[..., 0] > 200) & (fail_img[..., 1] < 50) & (fail_img[..., 2] > 200)).sum()
-    assert purple_pixels < 50, f"expected ~no purple on auto-detect fail image, found {purple_pixels} pixels"
+    assert purple_pixels > 100, (
+        f"expected default purple Manual ROI rectangle on auto-detect fail "
+        f"image, found only {purple_pixels} purple pixels"
+    )

@@ -85,27 +85,23 @@ class BrushHeadProcessor(Processor):
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             h_img, w_img = gray.shape
 
-            # 1. Optional manual pre-crop. When PLC sets D110-D113 (cam1) /
-            # D114-D117 (cam2) — or D60-D63 in the legacy brush_head path —
-            # to a valid rect, narrow the search area before dot detection.
-            #
-            # "Set" = any of the four words is non-zero AND the rectangle
-            # has positive area after clamping to image bounds. The earlier
-            # `[0] > 0 and [1] > 0` check rejected legitimate ROIs starting
-            # at x=0 or y=0 (e.g. PLC writing (0, 100, 800, 600) — meant
-            # to crop the top portion of the frame from the left edge —
-            # was silently treated as auto-detect, and the operator's
-            # purple Manual ROI overlay never appeared).
-            mx1, my1, mx2, my2 = bp["manual_roi"]
-            mx2 = min(int(mx2), w_img)
-            my2 = min(int(my2), h_img)
-            mx1 = max(0, int(mx1))
-            my1 = max(0, int(my1))
-            use_manual_roi = any(bp["manual_roi"]) and mx2 > mx1 and my2 > my1
+            # 1. Resolve manual pre-crop ROI from PLC. The helper always
+            # returns a visual rectangle + label so the operator screen
+            # gets the purple overlay + "Manual ROI" label every cycle —
+            # even when PLC hasn't set D60-D63 (default = full-frame
+            # auto) or set them to garbage (default + "invalid" label).
+            # `use_manual_roi` only affects the algorithm's pre-crop
+            # decision, not whether the rectangle is drawn.
+            visual_manual_roi, manual_roi_label, use_manual_roi = self._resolve_manual_roi(
+                bp["manual_roi"], w_img, h_img
+            )
             if use_manual_roi:
+                mx1, my1, mx2, my2 = visual_manual_roi
                 search_gray = gray[my1:my2, mx1:mx2]
                 manual_roi_offset = (mx1, my1)
             else:
+                # Sentinel values for the (ignored) manual_roi log line.
+                mx1, my1, mx2, my2 = visual_manual_roi
                 search_gray = gray
                 manual_roi_offset = (0, 0)
 
@@ -114,17 +110,23 @@ class BrushHeadProcessor(Processor):
             if roi_result is None:
                 # Pull the partial diagnostics _find_roi_by_dots stashed —
                 # tells the operator WHICH check failed (too few dots,
-                # bad area, bad ratio) and the actual numbers.
+                # bad area, bad ratio), the actual numbers, the rejected
+                # ROI box (if any), and all detected dot centroids.
                 diag = self._last_fail_diag
                 fail_reason = diag.get("fail_reason", "no valid ROI")
                 logger.error(
                     f"[BrushHead] {fail_reason}"
                     + (f" (within manual ROI ({mx1},{my1})-({mx2},{my2}))" if use_manual_roi else "")
                 )
-                # First line (big red) shows the headline: which check failed.
-                # The bottom param panel (already drawn by _fail_image) shows
-                # the live numbers and configured thresholds — operator can
-                # pick which D5x register to nudge in the GUI.
+                # _find_roi_by_dots ran on `search_gray` which may have
+                # been pre-cropped to manual_roi — translate the box
+                # back to full-image coords so the orange overlay lands
+                # on the right pixels. dot centroids are translated
+                # inside _fail_image via `dots_offset` instead.
+                failed_box = diag.get("failed_box")
+                if failed_box is not None and use_manual_roi:
+                    failed_box = failed_box + np.array(manual_roi_offset, dtype=np.float32)
+
                 return Outcome(
                     ProcessResult.NG,
                     self._fail_image(
@@ -132,10 +134,14 @@ class BrushHeadProcessor(Processor):
                         f"NG: {fail_reason}",
                         bp,
                         h_img,
-                        manual_roi=(mx1, my1, mx2, my2) if use_manual_roi else None,
+                        manual_roi=visual_manual_roi,
+                        manual_roi_label=manual_roi_label,
                         dot_count=int(diag.get("dot_count", 0)),
                         roi_area=float(diag.get("roi_area", 0.0)),
                         roi_ratio=float(diag.get("roi_ratio", 0.0)),
+                        failed_box=failed_box,
+                        dots=diag.get("dots"),
+                        dots_offset=manual_roi_offset if use_manual_roi else (0, 0),
                     ),
                     (0.0, 0.0),
                     0.0,
@@ -191,7 +197,8 @@ class BrushHeadProcessor(Processor):
                         f"NG: crop {crop_w}x{crop_h} too small",
                         bp,
                         h_img,
-                        manual_roi=(mx1, my1, mx2, my2) if use_manual_roi else None,
+                        manual_roi=visual_manual_roi,
+                        manual_roi_label=manual_roi_label,
                         dot_count=dot_count,
                         roi_area=roi_area,
                         roi_ratio=roi_ratio,
@@ -237,7 +244,8 @@ class BrushHeadProcessor(Processor):
                 dot_count,
                 roi_area,
                 roi_ratio,
-                manual_roi=(mx1, my1, mx2, my2) if use_manual_roi else None,
+                manual_roi=visual_manual_roi,
+                manual_roi_label=manual_roi_label,
             )
 
             # The Outcome.center carries the side code (head repo convention):
@@ -354,13 +362,14 @@ class BrushHeadProcessor(Processor):
 
         On failure (any of the three rejection paths below), stashes
         partial diagnostics in `self._last_fail_diag` so the caller can
-        forward dot count / hull area / ratio to `_fail_image` for
-        operator-visible feedback. The diagnostics are scoped to one
-        process() call: success paths don't read them, and the next
-        failure overwrites the previous one. Single-threaded LOOP /
-        FIRE dispatch (per `legacy/fronback_orchestrator._do_brush_head`
-        and v2 TaskManager) keeps this safe — never two concurrent
-        callers on the same processor instance.
+        forward dot count / hull area / ratio + the actual rejected box
+        + the detected dot centroids to `_fail_image` for operator-visible
+        feedback. The diagnostics are scoped to one process() call:
+        success paths don't read them, and the next failure overwrites
+        the previous one. Single-threaded LOOP / FIRE dispatch (per
+        `legacy/fronback_orchestrator._do_brush_head` and v2 TaskManager)
+        keeps this safe — never two concurrent callers on the same
+        processor instance.
         """
         # Default to "no diagnostics" so a successful call doesn't leave
         # stale data behind for a future failure. Cheap dict re-assignment.
@@ -369,6 +378,16 @@ class BrushHeadProcessor(Processor):
             "roi_area": 0.0,
             "roi_ratio": 0.0,
             "fail_reason": "",
+            # When the ROI is rejected for area/ratio, this is the actual
+            # 4-point box the algorithm computed — caller draws it in
+            # orange so the operator sees "the algorithm thought the head
+            # was here" and can immediately tell whether the dot detector
+            # picked up the wrong region.
+            "failed_box": None,
+            # All detected dot centroids (in sub-image coords). When too
+            # few dots, drawing them as small circles tells the operator
+            # whether the adaptive threshold even detected anything.
+            "dots": [],
         }
 
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -394,6 +413,7 @@ class BrushHeadProcessor(Processor):
 
         dot_count = len(dots)
         self._last_fail_diag["dot_count"] = dot_count
+        self._last_fail_diag["dots"] = dots
 
         if dot_count < self.MIN_DOTS_FOR_HULL:
             reason = f"too few dots: {dot_count} < {self.MIN_DOTS_FOR_HULL}"
@@ -410,6 +430,12 @@ class BrushHeadProcessor(Processor):
 
         roi_area = long_len * short_len
         self._last_fail_diag["roi_area"] = roi_area
+        # Stash the actual computed box so the fail screen can draw it
+        # in orange — operator immediately sees "the algorithm thought
+        # the head was *here*" and can tell whether dot detection picked
+        # up the wrong region (e.g. background reflections were counted
+        # as bristle dots, ballooning the convex hull).
+        self._last_fail_diag["failed_box"] = box
 
         if not (bp["roi_area_min"] <= roi_area <= bp["roi_area_max"]):
             reason = f"area {roi_area:.0f} not in [{bp['roi_area_min']:.0f}, {bp['roi_area_max']:.0f}]"
@@ -491,6 +517,53 @@ class BrushHeadProcessor(Processor):
     # Drawing
     # ------------------------------------------------------------------
     @staticmethod
+    def _resolve_manual_roi(
+        plc_roi: tuple[int, int, int, int],
+        w_img: int,
+        h_img: int,
+    ) -> tuple[tuple[int, int, int, int], str, bool]:
+        """Resolve PLC-supplied manual ROI into (visual_rect, label, use_for_crop).
+
+        Three outcomes:
+          * Valid PLC value          → (clamped_rect, "Manual ROI", True)
+                                       — algorithm crops to this rect
+          * PLC set (0,0,0,0)        → (full_frame_inset, "Manual ROI: auto (full frame)", False)
+                                       — operator still sees a purple
+                                       rectangle, but the algorithm runs
+                                       on the full frame
+          * PLC value invalid        → (full_frame_inset, "Manual ROI: invalid {raw} (using full frame)", False)
+                                       — covers reversed (x2<x1), zero-area,
+                                       and out-of-frame cases. The label
+                                       tells the operator the PLC value
+                                       was rejected (vs silently ignored)
+                                       so they know to fix D60-D63.
+
+        The "default visual rectangle" inset 5 px from each edge so it's
+        visually distinguishable from the frame border itself. Operator
+        always sees the purple overlay, even when PLC isn't writing
+        D60-D63 yet.
+        """
+        full_visual = (5, 5, max(6, w_img - 5), max(6, h_img - 5))
+
+        if not any(plc_roi):
+            return full_visual, "Manual ROI: auto (full frame)", False
+
+        px1, py1, px2, py2 = plc_roi
+        cx1 = max(0, min(w_img, int(px1)))
+        cy1 = max(0, min(h_img, int(py1)))
+        cx2 = max(0, min(w_img, int(px2)))
+        cy2 = max(0, min(h_img, int(py2)))
+
+        if cx2 <= cx1 or cy2 <= cy1:
+            return (
+                full_visual,
+                f"Manual ROI: invalid {tuple(int(v) for v in plc_roi)} (using full frame)",
+                False,
+            )
+
+        return (cx1, cy1, cx2, cy2), "Manual ROI", True
+
+    @staticmethod
     def _put_text(
         vis: np.ndarray,
         text: str,
@@ -536,38 +609,75 @@ class BrushHeadProcessor(Processor):
         img_h: int,
         manual_roi: tuple[int, int, int, int] | None = None,
         *,
+        manual_roi_label: str = "Manual ROI",
         dot_count: int = 0,
         roi_area: float = 0.0,
         roi_ratio: float = 0.0,
+        failed_box: np.ndarray | None = None,
+        dots: list[tuple[float, float]] | None = None,
+        dots_offset: tuple[int, int] = (0, 0),
     ) -> np.ndarray:
         """Diagnostic image returned when the algorithm rejects a frame.
 
-        Draws the failure message + (optionally) the manual pre-crop ROI
-        rectangle so the operator can see WHERE the algorithm was looking.
-        Matches the original toothpasthead/_fail_image behaviour — earlier
-        v0.3.10 forgot to draw manual_roi here, leaving the operator
-        confused about whether manual ROI was even active.
+        Draws (in priority order):
+          1. Big red headline `msg` at top-left
+          2. Purple PLC-configured manual ROI rectangle (if set)
+          3. Orange "Fail ROI" outline of the rejected box (if any) —
+             this is the convex-hull minAreaRect the algorithm computed
+             before tripping the area / ratio check. Lets the operator
+             see *where* the algorithm thought the head was, so they can
+             tell at a glance whether dot detection picked up background
+             reflections vs the actual bristles.
+          4. Blue dot markers for every detected bristle centroid (the
+             raw dot detector output) — surfaces "the adapter found 5
+             dots scattered randomly" vs "found 50 dots clustered in
+             the wrong spot".
+          5. Bottom param panel with live + configured thresholds.
 
-        v0.3.17+: when the caller knows partial diagnostics from
-        `_find_roi_by_dots` (e.g. it found N dots but the convex hull
-        area was out of range), they're forwarded to `_draw_param_info`
-        so the bottom of the screen shows actual numbers rather than
-        always-zero defaults — operator can see immediately whether the
-        problem is dot detection, ROI area, or ratio.
+        v0.3.10+ added the manual_roi overlay; v0.3.17 added live diag
+        numbers; v0.3.19 added the orange Fail ROI + dot markers.
+
+        `dots_offset` is added to every dot centroid before drawing —
+        when manual_roi pre-crop is active, _find_roi_by_dots stashes
+        dot coords in the sub-image frame, so the caller passes the
+        crop's (x, y) origin to put markers back in full-image coords.
+        Same applies to `failed_box` when the caller pre-translates it.
         """
         vis = image.copy()
         self._put_text(vis, msg, (30, 50), color=(0, 0, 255), scale=1.2, thickness=3)
+
         if manual_roi is not None:
             mx1, my1, mx2, my2 = manual_roi
             cv2.rectangle(vis, (mx1, my1), (mx2, my2), (255, 0, 255), 2)
             self._put_text(
                 vis,
-                "Manual ROI",
+                manual_roi_label,
                 (mx1, max(0, my1 - 8)),
                 color=(255, 0, 255),
                 scale=0.5,
                 thickness=1,
             )
+
+        if failed_box is not None:
+            # Orange outline (BGR (0, 165, 255)) — distinct from the
+            # success red (0,0,255) so an operator can tell at a glance
+            # the screen is in fail mode.
+            cv2.drawContours(vis, [failed_box.astype(np.intp)], -1, (0, 165, 255), 2)
+            top_left = tuple(failed_box.astype(int).min(axis=0))
+            self._put_text(
+                vis,
+                "Fail ROI",
+                (int(top_left[0]), max(0, int(top_left[1]) - 8)),
+                color=(0, 165, 255),
+                scale=0.5,
+                thickness=1,
+            )
+
+        if dots:
+            ox, oy = dots_offset
+            for x, y in dots:
+                cv2.circle(vis, (int(x) + ox, int(y) + oy), 3, (255, 200, 0), -1)
+
         self._draw_param_info(vis, bp, img_h, dot_count, roi_area, roi_ratio)
         return vis
 
@@ -611,6 +721,7 @@ class BrushHeadProcessor(Processor):
         roi_area: float,
         roi_ratio: float,
         manual_roi: tuple[int, int, int, int] | None = None,
+        manual_roi_label: str = "Manual ROI",
     ) -> np.ndarray:
         vis = original.copy()
 
@@ -621,7 +732,7 @@ class BrushHeadProcessor(Processor):
             cv2.rectangle(vis, (mx1, my1), (mx2, my2), (255, 0, 255), 2)
             self._put_text(
                 vis,
-                "Manual ROI",
+                manual_roi_label,
                 (mx1, max(0, my1 - 8)),
                 color=(255, 0, 255),
                 scale=0.5,
