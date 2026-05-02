@@ -59,7 +59,28 @@ D40_HEIGHT_RESULT = 40
 
 LEGACY_TRIGGER_FIRE, LEGACY_TRIGGER_IDLE, LEGACY_TRIGGER_DONE = 10, 0, 1
 LEGACY_TRIGGER_LOOP = 11  # extension shipped in legacy v0.3.6+
-LEGACY_MODE_HEIGHT, LEGACY_MODE_FRONTBACK = 0, 1
+LEGACY_MODE_HEIGHT, LEGACY_MODE_FRONTBACK, LEGACY_MODE_BRUSH_HEAD = 0, 1, 2
+
+# Legacy brush_head parameter block (D50-D63, v0.3.16+). Physically isolated
+# from frontback (D10/D11) and height (D30-D36) per customer spec — only
+# system-level D0-D4 + D2 mode selector are shared. Each PLC slot at 0
+# means "use legacy_brush_head_defaults from config.json".
+D50_BRUSH_CAM1_EXP = 50
+D51_BRUSH_SHRINK_PCT = 51
+D52_BRUSH_ADAPT_BLOCK = 52
+# D53 reserved for future adapt_C; the GUI doesn't expose it.
+D54_BRUSH_DOT_AREA_MIN = 54
+D55_BRUSH_DOT_AREA_MAX = 55
+D56_BRUSH_ROI_AREA_MIN_X100 = 56
+D57_BRUSH_ROI_AREA_MAX_X100 = 57
+D58_BRUSH_RATIO_MIN_X10 = 58
+D59_BRUSH_RATIO_MAX_X10 = 59
+D60_BRUSH_MANUAL_X1 = 60
+D61_BRUSH_MANUAL_Y1 = 61
+D62_BRUSH_MANUAL_X2 = 62
+D63_BRUSH_MANUAL_Y2 = 63
+D42_BRUSH_DOT_COUNT = 42
+D43_BRUSH_AREA_X100 = 43
 
 
 # v2_unified (see plc/manager.py + plc/enums.py)
@@ -206,6 +227,52 @@ class PLC:
         with self._lock:
             self.client.write_single_register(D1_TRIGGER, LEGACY_TRIGGER_IDLE)
 
+    def legacy_set_brush_params(
+        self,
+        exposure: int,
+        shrink_pct: int,
+        adapt_block: int,
+        dot_min: int,
+        dot_max: int,
+        roi_area_min_x100: int,
+        roi_area_max_x100: int,
+        ratio_min_x10: int,
+        ratio_max_x10: int,
+    ) -> None:
+        """Block-write D50-D59 (10 words; D53 stays at the previous value
+        since it's reserved for future adapt_C and we don't expose it here).
+
+        Any field set to 0 means "use config.json default for this slot" on
+        the orchestrator side. Use `legacy_clear_brush_params` for a one-shot
+        all-zero write that returns every parameter to its config default.
+        """
+        words = [
+            int(exposure),  # D50
+            int(shrink_pct),  # D51
+            int(adapt_block),  # D52
+            0,  # D53 reserved
+            int(dot_min),  # D54
+            int(dot_max),  # D55
+            int(roi_area_min_x100),  # D56
+            int(roi_area_max_x100),  # D57
+            int(ratio_min_x10),  # D58
+            int(ratio_max_x10),  # D59
+        ]
+        with self._lock:
+            self.client.write_multiple_registers(D50_BRUSH_CAM1_EXP, words)
+
+    def legacy_set_brush_manual_roi(self, x1: int, y1: int, x2: int, y2: int) -> None:
+        """Block-write D60-D63: manual pre-crop rectangle. (0,0,0,0) means
+        auto-detect on full frame (matches BrushHeadProcessor's default)."""
+        with self._lock:
+            self.client.write_multiple_registers(D60_BRUSH_MANUAL_X1, [int(x1), int(y1), int(x2), int(y2)])
+
+    def legacy_clear_brush_params(self) -> None:
+        """Zero D50-D63 in one block-write — returns every brush_head
+        parameter to its config.json default for the next cycle."""
+        with self._lock:
+            self.client.write_multiple_registers(D50_BRUSH_CAM1_EXP, [0] * 14)
+
     # ---------------- v2_unified ----------------
 
     def v2_read_camera_status(self, camera_num: int) -> int | None:
@@ -319,7 +386,7 @@ def format_legacy_status(block: list[int]) -> list[tuple[str, str, str]]:
     return [
         ("D0  recognition", str(block[0]), "1=front/OK  2=back/NG  3=empty"),
         ("D1  trigger", str(block[1]), "10=fire  0=idle/ack  1=done"),
-        ("D2  mode", str(block[2]), "0=height  1=frontback"),
+        ("D2  mode", str(block[2]), "0=height  1=frontback  2=brush_head"),
         ("D3  cam1 status", str(block[3]), "1=ok  0=offline"),
         ("D4  cam2 status", str(block[4]), "1=ok  0=offline"),
         ("D10 cam1 exp", f"{block[10]} us", ""),
@@ -330,6 +397,9 @@ def format_legacy_status(block: list[int]) -> list[tuple[str, str, str]]:
         ("D32 min_y", str(block[32]), ""),
         ("D35 height comparison", str(block[35]), ""),
         ("D40 height result", str(block[40]), ""),
+        ("D42 brush dot count", str(block[42]), ""),
+        ("D43 brush area ÷100", str(block[43]), ""),
+        ("D50 brush cam1 exp", f"{block[50]} us" if len(block) > 50 else "—", ""),
     ]
 
 
@@ -478,6 +548,14 @@ class PLCTesterGUI:
         )
         self.legacy_height_btn.pack(side="left", padx=4, pady=4)
 
+        self.legacy_brush_btn = ttk.Button(
+            single,
+            text="FIRE BRUSH_HEAD  (D2=2, cam1, v0.3.16+)",
+            command=lambda: self._fire_legacy(LEGACY_MODE_BRUSH_HEAD, "BRUSH_HEAD / 牙刷头"),
+            width=40,
+        )
+        self.legacy_brush_btn.pack(side="left", padx=4, pady=4)
+
         # Continuous-loop buttons (D1=11; STOP writes D1=0). Requires binary
         # v0.3.6+ — older legacy binaries silently ignore D1=11.
         loop = ttk.LabelFrame(
@@ -503,6 +581,14 @@ class PLCTesterGUI:
         )
         self.legacy_loop_height_btn.pack(side="left", padx=4, pady=4)
 
+        self.legacy_loop_brush_btn = ttk.Button(
+            loop,
+            text="LOOP BRUSH_HEAD  (D2=2, D1=11)",
+            command=lambda: self._loop_legacy(LEGACY_MODE_BRUSH_HEAD, "LOOP BRUSH_HEAD"),
+            width=32,
+        )
+        self.legacy_loop_brush_btn.pack(side="left", padx=4, pady=4)
+
         self.legacy_stop_btn = ttk.Button(
             loop,
             text="STOP LOOP  (D1=0)",
@@ -511,6 +597,71 @@ class PLCTesterGUI:
         )
         self.legacy_stop_btn.pack(side="left", padx=4, pady=4)
 
+        # Brush_head parameter block (D50-D63). Each entry empty/0 means
+        # "use config.json default for this slot" — orchestrator merges per
+        # cycle. Lets the operator tune brush_head from the GUI without an
+        # SSH session into the NanoPi for config edits.
+        brush_params = ttk.LabelFrame(
+            parent,
+            text="Brush_head parameters (D50-D63; 0/empty = use config default)  -  v0.3.16+",
+            padding=6,
+        )
+        brush_params.pack(fill="x", padx=4, pady=4)
+
+        self.brush_param_entries: dict[str, tk.StringVar] = {}
+        param_specs = [
+            # (label_text, dict key, hint, default-display)
+            ("D50 cam1 exposure", "exposure", "μs (config: 5000)"),
+            ("D51 shrink_pct", "shrink_pct", "% (config: 15)"),
+            ("D52 adapt_block", "adapt_block", "odd (config: 31)"),
+            ("D54 dot_area_min", "dot_min", "px (config: 20)"),
+            ("D55 dot_area_max", "dot_max", "px (config: 500)"),
+            ("D56 roi_area_min ÷100", "roi_min", "× 100 px (config: 500 = 50000)"),
+            ("D57 roi_area_max ÷100", "roi_max", "× 100 px (config: 5000 = 500000)"),
+            ("D58 ratio_min × 10", "ratio_min", "÷ 10 (config: 15 = 1.5)"),
+            ("D59 ratio_max × 10", "ratio_max", "÷ 10 (config: 35 = 3.5)"),
+        ]
+        for i, (label, key, hint) in enumerate(param_specs):
+            row, col = divmod(i, 3)
+            cell = ttk.Frame(brush_params)
+            cell.grid(row=row, column=col, sticky="w", padx=6, pady=2)
+            ttk.Label(cell, text=label + ":", width=22).pack(side="left")
+            var = tk.StringVar(value="")
+            self.brush_param_entries[key] = var
+            ttk.Entry(cell, textvariable=var, width=8).pack(side="left", padx=2)
+            ttk.Label(cell, text=hint, foreground="gray", font=("", 8)).pack(side="left")
+
+        # Manual ROI section — its own row with 4 numeric entries.
+        manual_row = ttk.Frame(brush_params)
+        manual_row.grid(row=3, column=0, columnspan=3, sticky="w", pady=(8, 2))
+        ttk.Label(manual_row, text="D60-D63 manual_roi (x1, y1, x2, y2):  ").pack(side="left")
+        for key in ("manual_x1", "manual_y1", "manual_x2", "manual_y2"):
+            var = tk.StringVar(value="")
+            self.brush_param_entries[key] = var
+            ttk.Entry(manual_row, textvariable=var, width=6).pack(side="left", padx=2)
+        ttk.Label(
+            manual_row,
+            text="  (all 0/empty = auto-detect on full frame)",
+            foreground="gray",
+            font=("", 8),
+        ).pack(side="left")
+
+        # Action buttons.
+        actions = ttk.Frame(brush_params)
+        actions.grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        ttk.Button(
+            actions,
+            text="Apply brush params  (write D50-D63)",
+            command=self._apply_brush_params,
+            width=34,
+        ).pack(side="left", padx=2)
+        ttk.Button(
+            actions,
+            text="Clear all  (zero D50-D63 → defaults)",
+            command=self._clear_brush_params,
+            width=34,
+        ).pack(side="left", padx=2)
+
         # Status panel
         status = ttk.LabelFrame(parent, text="Live PLC State (legacy)", padding=6)
         status.pack(fill="both", padx=4, pady=4, expand=True)
@@ -518,7 +669,7 @@ class PLCTesterGUI:
         labels = [
             ("D0  recognition", "1=front/OK  2=back/NG  3=empty"),
             ("D1  trigger", "10=fire  0=idle/ack  1=done"),
-            ("D2  mode", "0=height  1=frontback"),
+            ("D2  mode", "0=height  1=frontback  2=brush_head"),
             ("D3  cam1 status", "1=ok  0=offline"),
             ("D4  cam2 status", "1=ok  0=offline"),
             ("D10 cam1 exp", "frontback mode"),
@@ -529,6 +680,9 @@ class PLCTesterGUI:
             ("D32 min_y", "height mode"),
             ("D35 height comparison", "height mode"),
             ("D40 height result", "height algorithm result"),
+            ("D42 brush dot count", "brush_head diagnostic (v0.3.16+)"),
+            ("D43 brush area ÷100", "brush_head diagnostic"),
+            ("D50 brush cam1 exp", "brush_head mode (independent of D10)"),
         ]
         for i, (key, hint) in enumerate(labels):
             ttk.Label(status, text=key + ":", width=24).grid(row=i, column=0, sticky="w")
@@ -717,6 +871,7 @@ class PLCTesterGUI:
         self._log(f"[legacy] firing {label}: D2={mode}, D1=10")
         self.legacy_fb_btn.config(state="disabled")
         self.legacy_height_btn.config(state="disabled")
+        self.legacy_brush_btn.config(state="disabled")
         threading.Thread(target=self._fire_legacy_worker, args=(mode,), daemon=True).start()
 
     def _fire_legacy_worker(self, mode: int) -> None:
@@ -766,6 +921,64 @@ class PLCTesterGUI:
             self._log(f"  [legacy STOP] error: {exc}")
             return
         self._refresh_status()
+
+    def _apply_brush_params(self) -> None:
+        """Read the 9 D50-D59 entries + 4 D60-D63 manual_roi entries and
+        write the whole D50-D63 block in two Modbus block-writes. Empty or
+        non-numeric inputs become 0 (which means 'use config default')."""
+        if self.plc is None:
+            messagebox.showwarning("Not connected", "Connect to the PLC first.")
+            return
+
+        def parse(key: str) -> int:
+            raw = self.brush_param_entries[key].get().strip()
+            if not raw:
+                return 0
+            try:
+                return int(raw)
+            except ValueError:
+                return 0
+
+        try:
+            self.plc.legacy_set_brush_params(
+                exposure=parse("exposure"),
+                shrink_pct=parse("shrink_pct"),
+                adapt_block=parse("adapt_block"),
+                dot_min=parse("dot_min"),
+                dot_max=parse("dot_max"),
+                roi_area_min_x100=parse("roi_min"),
+                roi_area_max_x100=parse("roi_max"),
+                ratio_min_x10=parse("ratio_min"),
+                ratio_max_x10=parse("ratio_max"),
+            )
+            self.plc.legacy_set_brush_manual_roi(
+                parse("manual_x1"),
+                parse("manual_y1"),
+                parse("manual_x2"),
+                parse("manual_y2"),
+            )
+        except Exception as exc:
+            self._log(f"  [brush params] write error: {exc}")
+            return
+
+        self._log(
+            "[brush params] D50-D59 written; D60-D63 manual_roi written. "
+            "Next D2=2 cycle will apply these (0 fields use config default)."
+        )
+
+    def _clear_brush_params(self) -> None:
+        """Zero D50-D63 + clear all GUI entries → next cycle uses config defaults."""
+        if self.plc is None:
+            messagebox.showwarning("Not connected", "Connect to the PLC first.")
+            return
+        try:
+            self.plc.legacy_clear_brush_params()
+        except Exception as exc:
+            self._log(f"  [brush params] clear error: {exc}")
+            return
+        for var in self.brush_param_entries.values():
+            var.set("")
+        self._log("[brush params] D50-D63 zeroed → all parameters fall back to config defaults.")
 
     # ---------------- v2 tab actions ----------------
 
@@ -1036,6 +1249,7 @@ class PLCTesterGUI:
                 elif kind == "legacy_buttons_on":
                     self.legacy_fb_btn.config(state="normal")
                     self.legacy_height_btn.config(state="normal")
+                    self.legacy_brush_btn.config(state="normal")
                 elif kind == "v2_buttons_on":
                     self.v2_fire_btn.config(state="normal")
         except Empty:
