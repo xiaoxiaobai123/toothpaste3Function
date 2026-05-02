@@ -104,18 +104,30 @@ class BrushHeadProcessor(Processor):
             # 2. Find ROI by dot convex hull (within manual pre-crop, if set).
             roi_result = self._find_roi_by_dots(search_gray, bp)
             if roi_result is None:
+                # Pull the partial diagnostics _find_roi_by_dots stashed —
+                # tells the operator WHICH check failed (too few dots,
+                # bad area, bad ratio) and the actual numbers.
+                diag = self._last_fail_diag
+                fail_reason = diag.get("fail_reason", "no valid ROI")
                 logger.error(
-                    "[BrushHead] no valid ROI found"
+                    f"[BrushHead] {fail_reason}"
                     + (f" (within manual ROI ({mx1},{my1})-({mx2},{my2}))" if use_manual_roi else "")
                 )
+                # First line (big red) shows the headline: which check failed.
+                # The bottom param panel (already drawn by _fail_image) shows
+                # the live numbers and configured thresholds — operator can
+                # pick which D5x register to nudge in the GUI.
                 return Outcome(
                     ProcessResult.NG,
                     self._fail_image(
                         image,
-                        "No valid ROI found",
+                        f"NG: {fail_reason}",
                         bp,
                         h_img,
                         manual_roi=(mx1, my1, mx2, my2) if use_manual_roi else None,
+                        dot_count=int(diag.get("dot_count", 0)),
+                        roi_area=float(diag.get("roi_area", 0.0)),
+                        roi_ratio=float(diag.get("roi_ratio", 0.0)),
                     ),
                     (0.0, 0.0),
                     0.0,
@@ -168,10 +180,13 @@ class BrushHeadProcessor(Processor):
                     ProcessResult.NG,
                     self._fail_image(
                         image,
-                        "Crop too small",
+                        f"NG: crop {crop_w}x{crop_h} too small",
                         bp,
                         h_img,
                         manual_roi=(mx1, my1, mx2, my2) if use_manual_roi else None,
+                        dot_count=dot_count,
+                        roi_area=roi_area,
+                        roi_ratio=roi_ratio,
                     ),
                     (0.0, 0.0),
                     0.0,
@@ -224,14 +239,13 @@ class BrushHeadProcessor(Processor):
         except Exception as e:
             logger.exception(f"[BrushHead] exception: {e}")
             fail_vis = image.copy() if image is not None else np.zeros((100, 100, 3), dtype=np.uint8)
-            cv2.putText(
+            self._put_text(
                 fail_vis,
                 f"Exception: {str(e)[:60]}",
                 (30, 50),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
-                (0, 0, 255),
-                2,
+                color=(0, 0, 255),
+                scale=0.8,
+                thickness=2,
             )
             return Outcome(ProcessResult.EXCEPTION, fail_vis, (0.0, 0.0), 0.0)
 
@@ -304,7 +318,27 @@ class BrushHeadProcessor(Processor):
     def _find_roi_by_dots(
         self, gray: np.ndarray, bp: dict[str, float]
     ) -> tuple[Any, np.ndarray, np.ndarray, float, float, int] | None:
-        """Locate the brush head ROI from the convex hull of bristle dots."""
+        """Locate the brush head ROI from the convex hull of bristle dots.
+
+        On failure (any of the three rejection paths below), stashes
+        partial diagnostics in `self._last_fail_diag` so the caller can
+        forward dot count / hull area / ratio to `_fail_image` for
+        operator-visible feedback. The diagnostics are scoped to one
+        process() call: success paths don't read them, and the next
+        failure overwrites the previous one. Single-threaded LOOP /
+        FIRE dispatch (per `legacy/fronback_orchestrator._do_brush_head`
+        and v2 TaskManager) keeps this safe — never two concurrent
+        callers on the same processor instance.
+        """
+        # Default to "no diagnostics" so a successful call doesn't leave
+        # stale data behind for a future failure. Cheap dict re-assignment.
+        self._last_fail_diag: dict[str, Any] = {
+            "dot_count": 0,
+            "roi_area": 0.0,
+            "roi_ratio": 0.0,
+            "fail_reason": "",
+        }
+
         blur = cv2.GaussianBlur(gray, (5, 5), 0)
         adapt = cv2.adaptiveThreshold(
             blur,
@@ -327,8 +361,12 @@ class BrushHeadProcessor(Processor):
                     dots.append((m["m10"] / m["m00"], m["m01"] / m["m00"]))
 
         dot_count = len(dots)
+        self._last_fail_diag["dot_count"] = dot_count
+
         if dot_count < self.MIN_DOTS_FOR_HULL:
-            logger.warning(f"[BrushHead] too few dots: {dot_count} < {self.MIN_DOTS_FOR_HULL}")
+            reason = f"too few dots: {dot_count} < {self.MIN_DOTS_FOR_HULL}"
+            self._last_fail_diag["fail_reason"] = reason
+            logger.warning(f"[BrushHead] {reason}")
             return None
 
         pts = np.array(dots, dtype=np.float32)
@@ -339,18 +377,21 @@ class BrushHeadProcessor(Processor):
         long_len, short_len, _ = self._edge_info(box)
 
         roi_area = long_len * short_len
+        self._last_fail_diag["roi_area"] = roi_area
+
         if not (bp["roi_area_min"] <= roi_area <= bp["roi_area_max"]):
-            logger.warning(
-                f"[BrushHead] ROI area {roi_area:.0f} outside [{bp['roi_area_min']}, {bp['roi_area_max']}]"
-            )
+            reason = f"area {roi_area:.0f} not in [{bp['roi_area_min']:.0f}, {bp['roi_area_max']:.0f}]"
+            self._last_fail_diag["fail_reason"] = reason
+            logger.warning(f"[BrushHead] ROI {reason}")
             return None
 
         roi_ratio = long_len / max(short_len, 1e-9)
+        self._last_fail_diag["roi_ratio"] = roi_ratio
+
         if not (bp["roi_ratio_min"] <= roi_ratio <= bp["roi_ratio_max"]):
-            logger.warning(
-                f"[BrushHead] ROI ratio {roi_ratio:.2f} outside "
-                f"[{bp['roi_ratio_min']:.2f}, {bp['roi_ratio_max']:.2f}]"
-            )
+            reason = f"ratio {roi_ratio:.2f} not in [{bp['roi_ratio_min']:.2f}, {bp['roi_ratio_max']:.2f}]"
+            self._last_fail_diag["fail_reason"] = reason
+            logger.warning(f"[BrushHead] ROI {reason}")
             return None
 
         return rect, box, hull, roi_area, roi_ratio, dot_count
@@ -417,6 +458,44 @@ class BrushHeadProcessor(Processor):
     # ------------------------------------------------------------------
     # Drawing
     # ------------------------------------------------------------------
+    @staticmethod
+    def _put_text(
+        vis: np.ndarray,
+        text: str,
+        pos: tuple[int, int],
+        *,
+        color: tuple[int, int, int],
+        scale: float = 0.6,
+        thickness: int = 1,
+    ) -> None:
+        """Draw `text` with a 2-px black outline so it stays legible
+        against bright bristle highlights, dark backgrounds, or any
+        gradient in between. The pre-v0.3.17 grey labels (180,180,180)
+        vanished on light backgrounds; outlining + brighter colours
+        fixes that without picking a single "high-contrast" colour
+        that itself disappears on red/green ROI overlays.
+        """
+        cv2.putText(
+            vis,
+            text,
+            pos,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale,
+            (0, 0, 0),
+            thickness + 2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            vis,
+            text,
+            pos,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            scale,
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
+
     def _fail_image(
         self,
         image: np.ndarray,
@@ -424,6 +503,10 @@ class BrushHeadProcessor(Processor):
         bp: dict[str, float],
         img_h: int,
         manual_roi: tuple[int, int, int, int] | None = None,
+        *,
+        dot_count: int = 0,
+        roi_area: float = 0.0,
+        roi_ratio: float = 0.0,
     ) -> np.ndarray:
         """Diagnostic image returned when the algorithm rejects a frame.
 
@@ -432,27 +515,33 @@ class BrushHeadProcessor(Processor):
         Matches the original toothpasthead/_fail_image behaviour — earlier
         v0.3.10 forgot to draw manual_roi here, leaving the operator
         confused about whether manual ROI was even active.
+
+        v0.3.17+: when the caller knows partial diagnostics from
+        `_find_roi_by_dots` (e.g. it found N dots but the convex hull
+        area was out of range), they're forwarded to `_draw_param_info`
+        so the bottom of the screen shows actual numbers rather than
+        always-zero defaults — operator can see immediately whether the
+        problem is dot detection, ROI area, or ratio.
         """
         vis = image.copy()
-        cv2.putText(vis, msg, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+        self._put_text(vis, msg, (30, 50), color=(0, 0, 255), scale=1.2, thickness=3)
         if manual_roi is not None:
             mx1, my1, mx2, my2 = manual_roi
             cv2.rectangle(vis, (mx1, my1), (mx2, my2), (255, 0, 255), 2)
-            cv2.putText(
+            self._put_text(
                 vis,
                 "Manual ROI",
                 (mx1, max(0, my1 - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255, 0, 255),
-                1,
-                cv2.LINE_AA,
+                color=(255, 0, 255),
+                scale=0.5,
+                thickness=1,
             )
-        self._draw_param_info(vis, bp, img_h)
+        self._draw_param_info(vis, bp, img_h, dot_count, roi_area, roi_ratio)
         return vis
 
-    @staticmethod
+    @classmethod
     def _draw_param_info(
+        cls,
         vis: np.ndarray,
         bp: dict[str, float],
         img_h: int,
@@ -468,7 +557,7 @@ class BrushHeadProcessor(Processor):
             f"roi_ratio={roi_ratio:.2f} ({bp['roi_ratio_min']:.1f}-{bp['roi_ratio_max']:.1f})",
         ]
         for line in lines:
-            cv2.putText(vis, line, (30, y), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180, 180, 180), 1, cv2.LINE_AA)
+            cls._put_text(vis, line, (30, y), color=(0, 255, 0), scale=0.55, thickness=1)
             y += 22
 
     def _draw_results(
@@ -498,15 +587,13 @@ class BrushHeadProcessor(Processor):
         if manual_roi is not None:
             mx1, my1, mx2, my2 = manual_roi
             cv2.rectangle(vis, (mx1, my1), (mx2, my2), (255, 0, 255), 2)
-            cv2.putText(
+            self._put_text(
                 vis,
                 "Manual ROI",
                 (mx1, max(0, my1 - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                (255, 0, 255),
-                1,
-                cv2.LINE_AA,
+                color=(255, 0, 255),
+                scale=0.5,
+                thickness=1,
             )
 
         roi_corners = self._transform_rect_to_original(M_inv, *roi_rect_rot)
@@ -526,64 +613,52 @@ class BrushHeadProcessor(Processor):
             side_text, side_color = "BACK (2)", (0, 100, 255)
         else:
             side_text, side_color = "UNKNOWN (0)", (0, 0, 255)
-        cv2.putText(vis, side_text, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 1.3, side_color, 3, cv2.LINE_AA)
+        self._put_text(vis, side_text, (30, 50), color=side_color, scale=1.3, thickness=3)
 
-        cv2.putText(
+        self._put_text(
             vis,
             f"Upper: {upper_density * 100:.1f}%",
             (30, 90),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (255, 150, 0),
-            2,
-            cv2.LINE_AA,
+            color=(255, 150, 0),
+            scale=0.8,
+            thickness=2,
         )
-        cv2.putText(
+        self._put_text(
             vis,
             f"Lower: {lower_density * 100:.1f}%",
             (30, 120),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 150, 255),
-            2,
-            cv2.LINE_AA,
+            color=(0, 150, 255),
+            scale=0.8,
+            thickness=2,
         )
-        cv2.putText(
+        self._put_text(
             vis,
             f"Diff: {diff_pct:.1f}%",
             (30, 150),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (0, 255, 255),
-            2,
-            cv2.LINE_AA,
+            color=(0, 255, 255),
+            scale=0.8,
+            thickness=2,
         )
 
-        cv2.putText(
+        self._put_text(
             vis,
             f"Dots: {dot_count}  Area: {roi_area:.0f}  Ratio: {roi_ratio:.2f}",
             (30, 180),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (200, 200, 200),
-            1,
-            cv2.LINE_AA,
+            color=(0, 255, 0),
+            scale=0.6,
+            thickness=1,
         )
 
         angle_text = f"Angle: {long_angle:.1f} deg" if abs(rot_angle) > 0.5 else "Angle: 0 deg"
-        cv2.putText(
-            vis, angle_text, (30, 205), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1, cv2.LINE_AA
-        )
+        self._put_text(vis, angle_text, (30, 205), color=(0, 255, 0), scale=0.6, thickness=1)
 
-        cv2.putText(
+        self._put_text(
             vis,
             "Red=ROI  Green=Analysis  Yellow=Split",
             (30, img_h - 15),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (180, 180, 180),
-            1,
-            cv2.LINE_AA,
+            color=(0, 255, 0),
+            scale=0.5,
+            thickness=1,
         )
 
         self._draw_param_info(vis, bp, img_h, dot_count, roi_area, roi_ratio)
