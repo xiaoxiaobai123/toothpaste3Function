@@ -42,6 +42,7 @@ from processing.display_utils import (
     add_company_name,
     convert_to_rgb565,
     fit_to_framebuffer,
+    put_text_outlined,
     save_rgb565_with_header,
 )
 
@@ -138,30 +139,26 @@ def _offline_placeholder(camera_num: int, ref_shape: tuple[int, int] | None = No
     title_scale = max(1.5, w / 600.0)
     title_thickness = max(2, int(title_scale * 2))
     (tw, th), _ = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, title_scale, title_thickness)
-    cv2.putText(
+    put_text_outlined(
         panel,
         title,
         ((w - tw) // 2, h // 2 - 20),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        title_scale,
-        (0, 0, 255),
-        title_thickness,
-        cv2.LINE_AA,
+        color=(0, 0, 255),
+        scale=title_scale,
+        thickness=title_thickness,
     )
 
     hint = "CHECK CABLE / POWER / IP"
     hint_scale = max(0.7, w / 1200.0)
     hint_thickness = max(1, int(hint_scale * 1.5))
     (hw_, _), _ = cv2.getTextSize(hint, cv2.FONT_HERSHEY_SIMPLEX, hint_scale, hint_thickness)
-    cv2.putText(
+    put_text_outlined(
         panel,
         hint,
         ((w - hw_) // 2, h // 2 + th + 30),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        hint_scale,
-        (255, 255, 255),
-        hint_thickness,
-        cv2.LINE_AA,
+        color=(255, 255, 255),
+        scale=hint_scale,
+        thickness=hint_thickness,
     )
 
     return panel
@@ -302,6 +299,10 @@ def render_height(
     right_limit: int = 0,
     comparison: int = 0,
     top_columns: tuple = (),
+    state: int = 0,
+    max_y_avg: int = 0,
+    brightness_threshold: int = 0,
+    min_height: int = 0,
 ) -> np.ndarray:
     """Write cam2 frame to display sinks with optional algorithm overlays.
 
@@ -331,6 +332,23 @@ def render_height(
         comparison=comparison,
         top_columns=top_columns,
     )
+    # v0.3.23+: stamp the algorithm result + numbers in the brush_head
+    # text style (outlined, bright colours) so the operator gets the
+    # same diagnostic surface across all three modes. No-op when state
+    # == 0 (caller didn't supply data — keeps backwards compatibility
+    # with raw render_height(image) calls).
+    if state != 0 or max_y_avg != 0 or brightness_threshold != 0 or min_height != 0:
+        _draw_height_diagnostics(
+            annotated,
+            state=state,
+            max_y_avg=max_y_avg,
+            comparison=comparison,
+            brightness_threshold=brightness_threshold,
+            min_height=min_height,
+            left_limit=left_limit,
+            right_limit=right_limit,
+            top_columns_count=len(top_columns),
+        )
     # Company-name banner stacked on top — same as frontback. Tolerant
     # of a missing company_name.png on a fresh dev machine.
     try:
@@ -340,6 +358,67 @@ def render_height(
     annotated = _maybe_fit_to_fb(annotated)
     _write_sinks(annotated, png_path, rgb565_path)
     return annotated
+
+
+# Height result colour codes (BGR). Match the brush_head side colour
+# scheme so an operator scanning the screen reads the result instantly.
+_HEIGHT_STATE_COLORS = {
+    1: ((0, 255, 0), "OK (1)"),  # green
+    2: ((0, 100, 255), "NG (2)"),  # red-orange (= brush_head BACK)
+    3: ((128, 128, 128), "EMPTY (3)"),  # grey
+}
+
+
+def _draw_height_diagnostics(
+    vis: np.ndarray,
+    *,
+    state: int,
+    max_y_avg: int,
+    comparison: int,
+    brightness_threshold: int,
+    min_height: int,
+    left_limit: int,
+    right_limit: int,
+    top_columns_count: int,
+) -> None:
+    """Stamp the algorithm result + parameter numbers on the height
+    operator screen, matching the brush_head text style (outlined +
+    bright colours). Drawn directly on `vis` (mutates).
+    """
+    h, w = vis.shape[:2]
+    state_color, state_text = _HEIGHT_STATE_COLORS.get(state, ((255, 255, 255), f"UNKNOWN ({state})"))
+    put_text_outlined(vis, state_text, (30, 50), color=state_color, scale=1.3, thickness=3)
+
+    # Result line — large enough to read at a distance.
+    put_text_outlined(
+        vis,
+        f"max_y_avg: {max_y_avg}  (threshold {comparison})",
+        (30, 95),
+        color=(0, 255, 255),
+        scale=0.8,
+        thickness=2,
+    )
+
+    # Compact params row underneath.
+    put_text_outlined(
+        vis,
+        f"top-N picks: {top_columns_count}",
+        (30, 130),
+        color=(255, 200, 0),
+        scale=0.7,
+        thickness=2,
+    )
+
+    # Bottom-left params block — equivalent to brush_head's _draw_param_info.
+    y = h - 88
+    lines = [
+        f"brightness > {brightness_threshold}  (D31)  /  min_y > {min_height}  (D32)",
+        f"col scan: x in [{left_limit}, {right_limit}]   (D33/D34;  0,0 = full width)",
+        f"comparison threshold: {comparison}  (D35)",
+    ]
+    for line in lines:
+        put_text_outlined(vis, line, (30, y), color=(0, 255, 0), scale=0.55, thickness=1)
+        y += 22
 
 
 # Overlay colours (BGR storage).

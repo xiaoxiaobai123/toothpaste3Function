@@ -35,6 +35,30 @@ _result_bar_cache: dict[tuple[int, str, ProcessResult], np.ndarray] = {}
 _combine_canvas_cache: dict[tuple[int, int], np.ndarray] = {}
 
 
+def put_text_outlined(
+    vis: np.ndarray,
+    text: str,
+    pos: tuple[int, int],
+    *,
+    color: tuple[int, int, int],
+    scale: float = 0.6,
+    thickness: int = 1,
+    font: int = cv2.FONT_HERSHEY_SIMPLEX,
+) -> None:
+    """Draw `text` at `pos` with a black outline so it stays legible
+    against bright highlights, dark backgrounds, or any gradient in
+    between. Outline is `thickness + 2` px black underneath, then the
+    requested colour on top.
+
+    Originally lived inside BrushHeadProcessor as `_put_text`; promoted
+    to module level in v0.3.23 so all three legacy display paths
+    (frontback / height / brush_head) and the offline-placeholder share
+    one styling rule.
+    """
+    cv2.putText(vis, text, pos, font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+    cv2.putText(vis, text, pos, font, scale, color, thickness, cv2.LINE_AA)
+
+
 def _get_company_bar_path() -> Path:
     """Look up company_name.png next to the binary or in assets/."""
     here = Path(__file__).resolve().parent.parent

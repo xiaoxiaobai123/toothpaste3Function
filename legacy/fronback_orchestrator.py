@@ -368,6 +368,10 @@ class LegacyFronbackOrchestrator:
                 right_limit=settings.right_limit,
                 comparison=settings.height_comparison,
                 top_columns=result.top_columns,
+                state=d0_value,
+                max_y_avg=result.max_y_avg,
+                brightness_threshold=settings.brightness_threshold,
+                min_height=settings.min_height,
             ),
         )
 
@@ -463,10 +467,16 @@ class LegacyFronbackOrchestrator:
         right_limit: int = 0,
         comparison: int = 0,
         top_columns: tuple = (),
+        state: int = 0,
+        max_y_avg: int = 0,
+        brightness_threshold: int = 0,
+        min_height: int = 0,
     ) -> None:
-        """Forward overlays through to render_height. Defaults match the
-        original raw-frame behaviour for any caller that doesn't pass
-        them (existing tests, manual invocations from REPL, etc.)."""
+        """Forward overlays + algorithm result through to render_height.
+        Defaults preserve raw-frame behaviour for callers that don't
+        pass them (existing tests, manual REPL invocations, brush_head
+        which goes through this same render path but doesn't have a
+        height-mode `state` value)."""
         try:
             render_height(
                 image,
@@ -476,6 +486,10 @@ class LegacyFronbackOrchestrator:
                 right_limit=right_limit,
                 comparison=comparison,
                 top_columns=top_columns,
+                state=state,
+                max_y_avg=max_y_avg,
+                brightness_threshold=brightness_threshold,
+                min_height=min_height,
             )
         except Exception as e:
             self.logger.error(f"[Legacy] display render failed: {e}")

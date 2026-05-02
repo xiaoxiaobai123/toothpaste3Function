@@ -593,33 +593,16 @@ class BrushHeadProcessor(Processor):
         scale: float = 0.6,
         thickness: int = 1,
     ) -> None:
-        """Draw `text` with a 2-px black outline so it stays legible
-        against bright bristle highlights, dark backgrounds, or any
-        gradient in between. The pre-v0.3.17 grey labels (180,180,180)
-        vanished on light backgrounds; outlining + brighter colours
-        fixes that without picking a single "high-contrast" colour
-        that itself disappears on red/green ROI overlays.
+        """Thin delegate to the shared `processing.display_utils.put_text_outlined`.
+
+        Kept on the class so existing call sites (`self._put_text` and
+        `cls._put_text` in subclasses / static contexts) keep working
+        without churn. The shared module-level function is the canonical
+        implementation; legacy fronback / height paths use it directly.
         """
-        cv2.putText(
-            vis,
-            text,
-            pos,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            scale,
-            (0, 0, 0),
-            thickness + 2,
-            cv2.LINE_AA,
-        )
-        cv2.putText(
-            vis,
-            text,
-            pos,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            scale,
-            color,
-            thickness,
-            cv2.LINE_AA,
-        )
+        from processing.display_utils import put_text_outlined
+
+        put_text_outlined(vis, text, pos, color=color, scale=scale, thickness=thickness)
 
     def _fail_image(
         self,
