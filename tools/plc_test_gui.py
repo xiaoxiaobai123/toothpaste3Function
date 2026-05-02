@@ -59,7 +59,7 @@ D40_HEIGHT_RESULT = 40
 
 LEGACY_TRIGGER_FIRE, LEGACY_TRIGGER_IDLE, LEGACY_TRIGGER_DONE = 10, 0, 1
 LEGACY_TRIGGER_LOOP = 11  # extension shipped in legacy v0.3.6+
-LEGACY_MODE_HEIGHT, LEGACY_MODE_FRONTBACK, LEGACY_MODE_BRUSH_HEAD = 0, 1, 2
+LEGACY_MODE_FRONTBACK, LEGACY_MODE_HEIGHT, LEGACY_MODE_BRUSH_HEAD = 0, 1, 2  # v0.3.26+
 
 # Legacy brush_head parameter block (D50-D63, v0.3.16+). Physically isolated
 # from frontback (D10/D11) and height (D30-D36) per customer spec — only
@@ -386,7 +386,7 @@ def format_legacy_status(block: list[int]) -> list[tuple[str, str, str]]:
     return [
         ("D0  recognition", str(block[0]), "1=front/OK  2=back/NG  3=empty"),
         ("D1  trigger", str(block[1]), "10=fire  0=idle/ack  1=done"),
-        ("D2  mode", str(block[2]), "0=height  1=frontback  2=brush_head"),
+        ("D2  mode", str(block[2]), "0=frontback  1=height  2=brush_head"),
         ("D3  cam1 status", str(block[3]), "1=ok  0=offline"),
         ("D4  cam2 status", str(block[4]), "1=ok  0=offline"),
         ("D10 cam1 exp", f"{block[10]} us", ""),
@@ -534,7 +534,7 @@ class PLCTesterGUI:
 
         self.legacy_fb_btn = ttk.Button(
             single,
-            text="FIRE FRONTBACK  (D2=1, dual-cam)",
+            text="FIRE FRONTBACK  (D2=0, dual-cam)",
             command=lambda: self._fire_legacy(LEGACY_MODE_FRONTBACK, "FRONTBACK / 正反"),
             width=34,
         )
@@ -542,7 +542,7 @@ class PLCTesterGUI:
 
         self.legacy_height_btn = ttk.Button(
             single,
-            text="FIRE HEIGHT  (D2=0, cam2 only)",
+            text="FIRE HEIGHT  (D2=1, cam2 only)",
             command=lambda: self._fire_legacy(LEGACY_MODE_HEIGHT, "HEIGHT / 高度"),
             width=34,
         )
@@ -567,7 +567,7 @@ class PLCTesterGUI:
 
         self.legacy_loop_fb_btn = ttk.Button(
             loop,
-            text="LOOP FRONTBACK  (D2=1, D1=11)",
+            text="LOOP FRONTBACK  (D2=0, D1=11)",
             command=lambda: self._loop_legacy(LEGACY_MODE_FRONTBACK, "LOOP FRONTBACK"),
             width=28,
         )
@@ -575,7 +575,7 @@ class PLCTesterGUI:
 
         self.legacy_loop_height_btn = ttk.Button(
             loop,
-            text="LOOP HEIGHT  (D2=0, D1=11)",
+            text="LOOP HEIGHT  (D2=1, D1=11)",
             command=lambda: self._loop_legacy(LEGACY_MODE_HEIGHT, "LOOP HEIGHT"),
             width=28,
         )
@@ -669,7 +669,7 @@ class PLCTesterGUI:
         labels = [
             ("D0  recognition", "1=front/OK  2=back/NG  3=empty"),
             ("D1  trigger", "10=fire  0=idle/ack  1=done"),
-            ("D2  mode", "0=height  1=frontback  2=brush_head"),
+            ("D2  mode", "0=frontback  1=height  2=brush_head"),
             ("D3  cam1 status", "1=ok  0=offline"),
             ("D4  cam2 status", "1=ok  0=offline"),
             ("D10 cam1 exp", "frontback mode"),

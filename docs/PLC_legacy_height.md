@@ -9,7 +9,7 @@
 | `D0` | 视觉→PLC | uint16 | result | 1=OK / 2=NG / 3=EMPTY |
 | `D1` | PLC→视觉 | uint16 | trigger | 10=FIRE / 11=LOOP / 0=stop |
 | `D1` | 视觉→PLC | uint16 | trigger ack | 0=ack / 1=done |
-| `D2` | PLC→视觉 | uint16 | mode | **写 0 选 height** |
+| `D2` | PLC→视觉 | uint16 | mode | **写 1 选 height** |
 | `D3` | 视觉→PLC | uint16 | cam1_status | 1=online / 0=offline |
 | `D4` | 视觉→PLC | uint16 | cam2_status | 同上 |
 | `D9` | 视觉→PLC | uint16 | system_heartbeat | 每秒翻 0/1,PLC watchdog 监视 |
@@ -37,7 +37,7 @@
 ## 触发
 
 ```
-单次:  PLC 写 D2=0, D1=10  →  视觉跑完写 D0/D40 + D1=1
-LOOP:  PLC 写 D2=0, D1=11  →  视觉持续跑,每 cycle 写 D0/D40
+单次:  PLC 写 D2=1, D1=10  →  视觉跑完写 D0/D40 + D1=1
+LOOP:  PLC 写 D2=1, D1=11  →  视觉持续跑,每 cycle 写 D0/D40
                             →  PLC 写 D1=0 停止
 ```

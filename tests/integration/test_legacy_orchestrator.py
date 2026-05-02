@@ -126,7 +126,7 @@ async def test_frontback_one_cycle_writes_d0_and_edge_counts(
 
     plc = ScriptedPLC()
     plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_FIRE
-    plc.regs[2] = 1  # MODE_FRONTBACK
+    plc.regs[2] = 0  # MODE_FRONTBACK
     plc.regs[REG_CAM1_EXPOSURE] = 5000
     plc.regs[REG_CAM1_EXPOSURE + 1] = 5000
 
@@ -192,7 +192,7 @@ async def test_frontback_swaps_result_when_cam2_has_more_edges(
 
     plc = ScriptedPLC()
     plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_FIRE
-    plc.regs[2] = 1
+    plc.regs[2] = 0
 
     legacy_plc = LegacyFronbackPLC(plc_base=plc)
     # Swapped: cam1 gets the low-edge folder, cam2 gets the high-edge folder.
@@ -221,7 +221,7 @@ async def test_height_one_cycle_writes_d0_and_d40(height_dir: Path, tmp_path: Pa
     """D2=0 + D1=10 → orchestrator writes D0 + D40, doesn't touch D3/D20-23."""
     plc = ScriptedPLC()
     plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_FIRE
-    plc.regs[2] = 0  # MODE_HEIGHT
+    plc.regs[2] = 1  # MODE_HEIGHT
     plc.regs[REG_HEIGHT_CAM2_EXPOSURE] = 4000
     plc.regs[31] = 100  # brightness
     plc.regs[32] = 50  # min_height
@@ -266,7 +266,7 @@ async def test_trigger_acknowledged_then_done(cam_dir: tuple[Path, Path], tmp_pa
 
     plc = ScriptedPLC()
     plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_FIRE
-    plc.regs[2] = 1
+    plc.regs[2] = 0
 
     legacy_plc = LegacyFronbackPLC(plc_base=plc)
     cam = MockCameraManager({1: d1, 2: d2})
@@ -303,7 +303,7 @@ async def test_frontback_renders_offline_placeholder_when_cam1_missing(
 
     plc = ScriptedPLC()
     plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_FIRE
-    plc.regs[2] = 1  # MODE_FRONTBACK
+    plc.regs[2] = 0  # MODE_FRONTBACK
 
     legacy_plc = LegacyFronbackPLC(plc_base=plc)
     # MockCameraManager returns None from capture_image(1) when cam1 is
@@ -371,7 +371,7 @@ async def test_loop_runs_multiple_cycles_until_d1_changes(cam_dir: tuple[Path, P
 
     plc = ScriptedPLC()
     plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_LOOP
-    plc.regs[2] = 1  # MODE_FRONTBACK
+    plc.regs[2] = 0  # MODE_FRONTBACK
     plc.regs[REG_CAM1_EXPOSURE] = 5000
     plc.regs[REG_CAM1_EXPOSURE + 1] = 5000
 
@@ -409,7 +409,7 @@ async def test_loop_does_not_write_d1_handshake(cam_dir: tuple[Path, Path], tmp_
 
     plc = ScriptedPLC()
     plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_LOOP
-    plc.regs[2] = 1  # MODE_FRONTBACK
+    plc.regs[2] = 0  # MODE_FRONTBACK
     plc.regs[REG_CAM1_EXPOSURE] = 5000
     plc.regs[REG_CAM1_EXPOSURE + 1] = 5000
 
@@ -452,7 +452,7 @@ async def test_loop_honors_mid_loop_mode_change(
 
     plc = ScriptedPLC()
     plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_LOOP
-    plc.regs[2] = 1  # start in MODE_FRONTBACK
+    plc.regs[2] = 0  # start in MODE_FRONTBACK
     plc.regs[REG_CAM1_EXPOSURE] = 5000
     plc.regs[REG_CAM1_EXPOSURE + 1] = 5000
     plc.regs[REG_HEIGHT_CAM2_EXPOSURE] = 5000
@@ -478,7 +478,7 @@ async def test_loop_honors_mid_loop_mode_change(
     # Let frontback iterations happen
     await asyncio.sleep(0.3)
     # Switch to HEIGHT mid-loop
-    plc.regs[2] = 0  # MODE_HEIGHT
+    plc.regs[2] = 1  # MODE_HEIGHT
     await asyncio.sleep(0.4)
     # Stop the loop
     plc.regs[REG_CAPTURE_TRIGGER] = TRIGGER_IDLE
@@ -584,7 +584,7 @@ async def test_no_capture_when_trigger_idle(cam_dir: tuple[Path, Path], tmp_path
 
     plc = ScriptedPLC()
     plc.regs[REG_CAPTURE_TRIGGER] = 0  # NEVER fires
-    plc.regs[2] = 1
+    plc.regs[2] = 0
 
     legacy_plc = LegacyFronbackPLC(plc_base=plc)
     cam = MockCameraManager({1: d1, 2: d2})

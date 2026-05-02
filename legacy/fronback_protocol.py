@@ -6,8 +6,10 @@ on every value that affects PLC-observable behaviour. See
 
 PLC writes (we read):
     D1   capture trigger   (10 = capture, 11 = LOOP, anything else = idle)
-    D2   workcamera_count  (mode selector: 1 = dual-cam frontback,
-                            0 = single-cam height, 2 = single-cam brush_head)
+    D2   workcamera_count  (mode selector, v0.3.26+:
+                            0 = dual-cam frontback,
+                            1 = single-cam height,
+                            2 = single-cam brush_head)
     D10  cam1 exposure µs              (frontback mode)
     D11  cam2 exposure µs              (frontback mode)
     D30  cam2 exposure µs              (height mode)
@@ -145,8 +147,8 @@ TRIGGER_IDLE = 0
 TRIGGER_DONE = 1
 TRIGGER_LOOP = 11
 
-MODE_HEIGHT = 0  # single-camera height detection
-MODE_FRONTBACK = 1  # dual-camera front/back detection
+MODE_FRONTBACK = 0  # dual-camera front/back detection (v0.3.26+: 客户要求把 0/1 互换)
+MODE_HEIGHT = 1  # single-camera height detection
 MODE_BRUSH_HEAD = 2  # single-camera brush-head detection (cam1, additive extension)
 
 RESULT_FRONT_OR_OK = 1
